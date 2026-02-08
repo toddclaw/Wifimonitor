@@ -2,4 +2,3 @@ adafruit-blinka
 adafruit-circuitpython-rgb-display
 Pillow
 RPi.GPIO
-scapy

@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
 """WiFi Monitor - Displays nearby WiFi networks on an Adafruit Mini PiTFT.
 
-Uses monitor mode with channel hopping on a USB WiFi dongle to passively
-detect and count active clients associated with each access point.
-The built-in wlan0 interface is used for network scanning (iwlist).
+Uses airodump-ng in monitor mode on a USB WiFi dongle to discover networks,
+track signal strength, security type, and count associated clients.
 """
 
 import atexit
-import re
+import csv
+import glob
+import os
+import signal
 import subprocess
-import threading
 import time
 
 import board
 import digitalio
 from PIL import Image, ImageDraw, ImageFont
-from scapy.all import Dot11, sniff
 import adafruit_rgb_display.st7789 as st7789
 
 # -- Display constants --
@@ -24,20 +24,14 @@ DISPLAY_HEIGHT = 135
 FONT_SIZE = 10
 
 # -- Interface config --
-SCAN_INTERFACE = "wlan0"       # built-in WiFi for iwlist scanning
 MONITOR_INTERFACE = "wlan1"    # USB dongle for monitor mode
 
 # -- Timing --
-SCAN_INTERVAL = 15             # seconds between iwlist scans
-HOP_INTERVAL = 0.25            # seconds per channel hop
+DISPLAY_INTERVAL = 5           # seconds between display refreshes
+AIRODUMP_WRITE_INTERVAL = 5   # how often airodump-ng flushes its CSV
 
-# -- Channels to hop through --
-CHANNELS_24GHZ = list(range(1, 12))
-CHANNELS_5GHZ = [
-    36, 40, 44, 48, 52, 56, 60, 64,
-    100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140,
-    149, 153, 157, 161, 165,
-]
+# -- Airodump output --
+AIRODUMP_PREFIX = "/tmp/wifi_monitor"
 
 # -- Colors --
 BLACK = (0, 0, 0)
@@ -49,8 +43,6 @@ CYAN = (0, 255, 255)
 GRAY = (128, 128, 128)
 DIM = (40, 40, 40)
 ORANGE = (255, 165, 0)
-
-BROADCAST_MAC = "ff:ff:ff:ff:ff:ff"
 
 
 # ---------------------------------------------------------------------------
@@ -136,212 +128,184 @@ def disable_monitor_mode(interface=MONITOR_INTERFACE):
 
 
 # ---------------------------------------------------------------------------
-# Channel hopper
+# Airodump-ng process and CSV parsing
 # ---------------------------------------------------------------------------
 
-class ChannelHopper:
-    """Cycle through WiFi channels in a background thread."""
+class AirodumpNG:
+    """Manage an airodump-ng process and parse its CSV output.
 
-    def __init__(self, interface, channels=None):
+    airodump-ng handles channel hopping, network discovery, and client
+    association tracking — replacing our manual ChannelHopper, ClientTracker,
+    and iwlist scanning.
+    """
+
+    def __init__(self, interface, prefix=AIRODUMP_PREFIX):
         self.interface = interface
-        self.channels = channels or CHANNELS_24GHZ + CHANNELS_5GHZ
-        self._stop = threading.Event()
-        self._thread = None
+        self.prefix = prefix
+        self._proc = None
 
     def start(self):
-        self._thread = threading.Thread(target=self._hop, daemon=True)
-        self._thread.start()
+        """Start airodump-ng writing CSV output."""
+        self._cleanup_old_files()
+        self._proc = subprocess.Popen(
+            [
+                "sudo", "airodump-ng",
+                self.interface,
+                "--band", "abg",                     # 2.4GHz + 5GHz
+                "--write", self.prefix,
+                "--output-format", "csv",
+                "--write-interval", str(AIRODUMP_WRITE_INTERVAL),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        print(f"[+] airodump-ng started (PID {self._proc.pid})")
 
     def stop(self):
-        self._stop.set()
-        if self._thread:
-            self._thread.join(timeout=5)
+        """Stop the airodump-ng process."""
+        if self._proc and self._proc.poll() is None:
+            self._proc.send_signal(signal.SIGTERM)
+            try:
+                self._proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self._proc.kill()
+            print("[+] airodump-ng stopped")
+        self._cleanup_old_files()
 
-    def _hop(self):
-        while not self._stop.is_set():
-            for channel in self.channels:
-                if self._stop.is_set():
-                    break
-                try:
-                    subprocess.run(
-                        ["sudo", "iw", "dev", self.interface,
-                         "set", "channel", str(channel)],
-                        capture_output=True,
-                        timeout=5,
-                    )
-                except subprocess.SubprocessError:
-                    pass
-                self._stop.wait(HOP_INTERVAL)
+    def parse(self):
+        """Parse the latest airodump-ng CSV and return (networks, client_counts).
 
+        networks: list of dicts with bssid, ssid, signal, channel, security
+        client_counts: dict of {bssid: number_of_clients}
+        """
+        csv_path = self._latest_csv()
+        if not csv_path:
+            return [], {}
 
-# ---------------------------------------------------------------------------
-# Client tracker (passive sniffing)
-# ---------------------------------------------------------------------------
+        try:
+            with open(csv_path, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+        except OSError:
+            return [], {}
 
-def _is_multicast(mac):
-    """Return True if a MAC address is broadcast or multicast."""
-    if not mac or mac == BROADCAST_MAC:
-        return True
-    try:
-        return bool(int(mac.split(":")[0], 16) & 0x01)
-    except (ValueError, IndexError):
-        return True
-
-
-class ClientTracker:
-    """Passively sniff 802.11 frames and track unique clients per BSSID."""
-
-    def __init__(self, interface):
-        self.interface = interface
-        self._clients = {}          # bssid -> set of client MACs
-        self._lock = threading.Lock()
-        self._stop = threading.Event()
-        self._thread = None
-
-    def start(self):
-        self._thread = threading.Thread(target=self._sniff, daemon=True)
-        self._thread.start()
-
-    def stop(self):
-        self._stop.set()
-        if self._thread:
-            self._thread.join(timeout=5)
-
-    def get_client_counts(self):
-        """Return {bssid: client_count} snapshot."""
-        with self._lock:
-            return {bssid: len(macs) for bssid, macs in self._clients.items()}
+        return self._parse_csv(content)
 
     # -- internal --
 
-    def _sniff(self):
-        sniff(
-            iface=self.interface,
-            prn=self._process_packet,
-            store=False,
-            stop_filter=lambda _: self._stop.is_set(),
-        )
+    def _latest_csv(self):
+        """Find the most recent airodump-ng CSV file."""
+        files = sorted(glob.glob(f"{self.prefix}-*.csv"))
+        return files[-1] if files else None
 
-    def _process_packet(self, packet):
-        if not packet.haslayer(Dot11):
-            return
-
-        dot11 = packet[Dot11]
-        bssid, client = self._extract_bssid_client(dot11)
-
-        if bssid and client and not _is_multicast(client) and client != bssid:
-            with self._lock:
-                self._clients.setdefault(bssid, set()).add(client)
+    def _cleanup_old_files(self):
+        """Remove leftover airodump-ng output files."""
+        for f in glob.glob(f"{self.prefix}-*"):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
 
     @staticmethod
-    def _extract_bssid_client(dot11):
-        """Determine the BSSID and client MAC from a Dot11 frame.
+    def _parse_csv(content):
+        """Parse airodump-ng CSV content.
 
-        Returns (bssid, client) or (None, None) if not applicable.
+        The CSV has two sections separated by a blank line:
+        1. Access points (BSSIDs)
+        2. Stations (clients) with their associated BSSID
         """
-        addr1 = dot11.addr1   # receiver
-        addr2 = dot11.addr2   # transmitter
-        addr3 = dot11.addr3
+        networks = []
+        client_counts = {}
 
-        frame_type = dot11.type
-        subtype = dot11.subtype
+        # Split into AP section and station section
+        sections = content.split("\r\n\r\n")
+        if not sections:
+            return networks, client_counts
 
-        # Data frames (type 2) -- use To-DS / From-DS bits
-        if frame_type == 2:
-            ds = dot11.FCfield & 0x3
-            if ds == 0x1:       # To DS: client -> AP
-                return addr1, addr2
-            if ds == 0x2:       # From DS: AP -> client
-                return addr2, addr1
-            return None, None
+        # -- Parse AP section --
+        ap_lines = sections[0].strip().splitlines()
+        if ap_lines:
+            reader = csv.reader(ap_lines)
+            header = None
+            for row in reader:
+                row = [c.strip() for c in row]
+                if not row or not row[0]:
+                    continue
+                if "BSSID" in row[0]:
+                    header = row
+                    continue
+                if header is None or len(row) < 14:
+                    continue
 
-        # Management frames (type 0)
-        if frame_type == 0:
-            # Association / reassociation requests (subtypes 0, 2)
-            if subtype in (0, 2):
-                return (addr3 or addr1), addr2
-            # Probe responses (subtype 5) -- AP answering a client
-            if subtype == 5:
-                return addr2, addr1
+                bssid = row[0].strip().lower()
+                channel_str = row[3].strip()
+                privacy = row[5].strip()
+                power = row[8].strip()
+                ssid = row[13].strip() if len(row) > 13 else ""
 
-        return None, None
+                try:
+                    signal_dbm = int(power)
+                except ValueError:
+                    signal_dbm = -100
+                # airodump reports -1 when power is unknown
+                if signal_dbm == -1:
+                    signal_dbm = -100
+
+                try:
+                    channel = int(channel_str)
+                except ValueError:
+                    channel = 0
+
+                security = _map_privacy(privacy)
+
+                networks.append({
+                    "bssid": bssid,
+                    "ssid": ssid,
+                    "signal": signal_dbm,
+                    "channel": channel,
+                    "security": security,
+                })
+
+        # -- Parse station (client) section --
+        if len(sections) > 1:
+            sta_lines = sections[1].strip().splitlines()
+            if sta_lines:
+                reader = csv.reader(sta_lines)
+                header = None
+                for row in reader:
+                    row = [c.strip() for c in row]
+                    if not row or not row[0]:
+                        continue
+                    if "Station MAC" in row[0]:
+                        header = row
+                        continue
+                    if header is None or len(row) < 6:
+                        continue
+
+                    bssid = row[5].strip().lower()
+                    # "(not associated)" stations don't count
+                    if not bssid or "not associated" in bssid:
+                        continue
+
+                    client_counts[bssid] = client_counts.get(bssid, 0) + 1
+
+        networks.sort(key=lambda n: n["signal"], reverse=True)
+        return networks, client_counts
 
 
-# ---------------------------------------------------------------------------
-# WiFi scanning (iwlist on managed interface)
-# ---------------------------------------------------------------------------
-
-def scan_wifi(interface=SCAN_INTERFACE):
-    """Scan for nearby WiFi networks using iwlist on the managed interface."""
-    try:
-        result = subprocess.run(
-            ["sudo", "iwlist", interface, "scan"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        return parse_iwlist(result.stdout)
-    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-        print(f"Scan error: {e}")
-        return []
-
-
-def parse_iwlist(output):
-    """Parse iwlist scan output into a list of network dicts."""
-    networks = []
-    current = None
-
-    for line in output.split("\n"):
-        line = line.strip()
-
-        if "Cell " in line and "Address:" in line:
-            if current:
-                networks.append(current)
-            current = {
-                "bssid": line.split("Address:")[1].strip(),
-                "ssid": "",
-                "signal": -100,
-                "channel": 0,
-                "security": "Open",
-            }
-
-        if current is None:
-            continue
-
-        if "ESSID:" in line:
-            match = re.search(r'ESSID:"(.*)"', line)
-            if match:
-                current["ssid"] = match.group(1)
-
-        elif "Signal level=" in line:
-            match = re.search(r"Signal level=(-?\d+)", line)
-            if match:
-                current["signal"] = int(match.group(1))
-
-        elif "Channel:" in line:
-            match = re.search(r"Channel:(\d+)", line)
-            if match:
-                current["channel"] = int(match.group(1))
-
-        elif "Encryption key:on" in line:
-            if current["security"] == "Open":
-                current["security"] = "WEP"
-
-        elif "IE: IEEE 802.11i/WPA2" in line:
-            current["security"] = "WPA2"
-
-        elif "IE: WPA Version" in line:
-            if current["security"] not in ("WPA2", "WPA3"):
-                current["security"] = "WPA"
-
-        elif "SAE" in line or "WPA3" in line:
-            current["security"] = "WPA3"
-
-    if current:
-        networks.append(current)
-
-    networks.sort(key=lambda n: n["signal"], reverse=True)
-    return networks
+def _map_privacy(privacy):
+    """Map airodump-ng Privacy field to a short security label."""
+    p = privacy.upper()
+    if "WPA3" in p or "SAE" in p:
+        return "WPA3"
+    if "WPA2" in p:
+        return "WPA2"
+    if "WPA" in p:
+        return "WPA"
+    if "WEP" in p:
+        return "WEP"
+    if "OPN" in p or not p:
+        return "Open"
+    return privacy[:5]
 
 
 # ---------------------------------------------------------------------------
@@ -446,7 +410,7 @@ def render(display, networks, client_counts, font, font_sm):
 # ---------------------------------------------------------------------------
 
 def main():
-    """Main loop: monitor mode + channel hop + scan + display."""
+    """Main loop: airodump-ng + display."""
     display = setup_display()
     font, font_sm = load_fonts()
 
@@ -461,23 +425,17 @@ def main():
     enable_monitor_mode(MONITOR_INTERFACE)
     atexit.register(disable_monitor_mode, MONITOR_INTERFACE)
 
-    # Start channel hopper
-    hopper = ChannelHopper(MONITOR_INTERFACE)
-    hopper.start()
-    atexit.register(hopper.stop)
+    # Start airodump-ng (handles channel hopping + scanning + client tracking)
+    airodump = AirodumpNG(MONITOR_INTERFACE)
+    airodump.start()
+    atexit.register(airodump.stop)
 
-    # Start passive client tracker
-    tracker = ClientTracker(MONITOR_INTERFACE)
-    tracker.start()
-    atexit.register(tracker.stop)
-
-    print("[+] Monitor mode active — scanning networks")
+    print("[+] Monitor mode active — airodump-ng scanning")
 
     while True:
-        networks = scan_wifi()
-        client_counts = tracker.get_client_counts()
+        networks, client_counts = airodump.parse()
         render(display, networks, client_counts, font, font_sm)
-        time.sleep(SCAN_INTERVAL)
+        time.sleep(DISPLAY_INTERVAL)
 
 
 if __name__ == "__main__":
