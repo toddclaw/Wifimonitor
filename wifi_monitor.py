@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""WiFi Monitor - Displays nearby WiFi networks on an Adafruit Mini PiTFT.
+"""WiFi Monitor — Raspberry Pi version with Adafruit Mini PiTFT.
 
 Uses airodump-ng in monitor mode on a USB WiFi dongle to discover networks,
 track signal strength, security type, and count associated clients.
+Results are rendered on the 135x240 PiTFT display.
 """
 
 import atexit
-import csv
 import glob
 import os
 import signal
@@ -17,6 +17,12 @@ import board
 import digitalio
 from PIL import Image, ImageDraw, ImageFont
 import adafruit_rgb_display.st7789 as st7789
+
+from wifi_common import (
+    BLACK, WHITE, CYAN, GRAY, DIM, ORANGE,
+    signal_to_bars, signal_color, security_color,
+    parse_airodump_csv,
+)
 
 # -- Display constants --
 DISPLAY_WIDTH = 240
@@ -32,17 +38,6 @@ AIRODUMP_WRITE_INTERVAL = 5   # how often airodump-ng flushes its CSV
 
 # -- Airodump output --
 AIRODUMP_PREFIX = "/tmp/wifi_monitor"
-
-# -- Colors --
-BLACK = (0, 0, 0)
-WHITE = (255, 255, 255)
-GREEN = (0, 255, 0)
-YELLOW = (255, 255, 0)
-RED = (255, 0, 0)
-CYAN = (0, 255, 255)
-GRAY = (128, 128, 128)
-DIM = (40, 40, 40)
-ORANGE = (255, 165, 0)
 
 
 # ---------------------------------------------------------------------------
@@ -128,15 +123,14 @@ def disable_monitor_mode(interface=MONITOR_INTERFACE):
 
 
 # ---------------------------------------------------------------------------
-# Airodump-ng process and CSV parsing
+# Airodump-ng process management
 # ---------------------------------------------------------------------------
 
 class AirodumpNG:
-    """Manage an airodump-ng process and parse its CSV output.
+    """Manage an airodump-ng process and read its CSV output.
 
     airodump-ng handles channel hopping, network discovery, and client
-    association tracking — replacing our manual ChannelHopper, ClientTracker,
-    and iwlist scanning.
+    association tracking.  CSV parsing is delegated to wifi_common.
     """
 
     def __init__(self, interface, prefix=AIRODUMP_PREFIX):
@@ -151,7 +145,7 @@ class AirodumpNG:
             [
                 "sudo", "airodump-ng",
                 self.interface,
-                "--band", "abg",                     # 2.4GHz + 5GHz
+                "--band", "abg",
                 "--write", self.prefix,
                 "--output-format", "csv",
                 "--write-interval", str(AIRODUMP_WRITE_INTERVAL),
@@ -173,11 +167,7 @@ class AirodumpNG:
         self._cleanup_old_files()
 
     def parse(self):
-        """Parse the latest airodump-ng CSV and return (networks, client_counts).
-
-        networks: list of dicts with bssid, ssid, signal, channel, security
-        client_counts: dict of {bssid: number_of_clients}
-        """
+        """Read the latest CSV and return (networks, client_counts)."""
         csv_path = self._latest_csv()
         if not csv_path:
             return [], {}
@@ -188,163 +178,26 @@ class AirodumpNG:
         except OSError:
             return [], {}
 
-        return self._parse_csv(content)
-
-    # -- internal --
+        return parse_airodump_csv(content)
 
     def _latest_csv(self):
-        """Find the most recent airodump-ng CSV file."""
         files = sorted(glob.glob(f"{self.prefix}-*.csv"))
         return files[-1] if files else None
 
     def _cleanup_old_files(self):
-        """Remove leftover airodump-ng output files."""
         for f in glob.glob(f"{self.prefix}-*"):
             try:
                 os.remove(f)
             except OSError:
                 pass
 
-    @staticmethod
-    def _parse_csv(content):
-        """Parse airodump-ng CSV content.
-
-        The CSV has two sections separated by a blank line:
-        1. Access points (BSSIDs)
-        2. Stations (clients) with their associated BSSID
-        """
-        networks = []
-        client_counts = {}
-
-        # Split into AP section and station section
-        sections = content.split("\r\n\r\n")
-        if not sections:
-            return networks, client_counts
-
-        # -- Parse AP section --
-        ap_lines = sections[0].strip().splitlines()
-        if ap_lines:
-            reader = csv.reader(ap_lines)
-            header = None
-            for row in reader:
-                row = [c.strip() for c in row]
-                if not row or not row[0]:
-                    continue
-                if "BSSID" in row[0]:
-                    header = row
-                    continue
-                if header is None or len(row) < 14:
-                    continue
-
-                bssid = row[0].strip().lower()
-                channel_str = row[3].strip()
-                privacy = row[5].strip()
-                power = row[8].strip()
-                ssid = row[13].strip() if len(row) > 13 else ""
-
-                try:
-                    signal_dbm = int(power)
-                except ValueError:
-                    signal_dbm = -100
-                # airodump reports -1 when power is unknown
-                if signal_dbm == -1:
-                    signal_dbm = -100
-
-                try:
-                    channel = int(channel_str)
-                except ValueError:
-                    channel = 0
-
-                security = _map_privacy(privacy)
-
-                networks.append({
-                    "bssid": bssid,
-                    "ssid": ssid,
-                    "signal": signal_dbm,
-                    "channel": channel,
-                    "security": security,
-                })
-
-        # -- Parse station (client) section --
-        if len(sections) > 1:
-            sta_lines = sections[1].strip().splitlines()
-            if sta_lines:
-                reader = csv.reader(sta_lines)
-                header = None
-                for row in reader:
-                    row = [c.strip() for c in row]
-                    if not row or not row[0]:
-                        continue
-                    if "Station MAC" in row[0]:
-                        header = row
-                        continue
-                    if header is None or len(row) < 6:
-                        continue
-
-                    bssid = row[5].strip().lower()
-                    # "(not associated)" stations don't count
-                    if not bssid or "not associated" in bssid:
-                        continue
-
-                    client_counts[bssid] = client_counts.get(bssid, 0) + 1
-
-        networks.sort(key=lambda n: n["signal"], reverse=True)
-        return networks, client_counts
-
-
-def _map_privacy(privacy):
-    """Map airodump-ng Privacy field to a short security label."""
-    p = privacy.upper()
-    if "WPA3" in p or "SAE" in p:
-        return "WPA3"
-    if "WPA2" in p:
-        return "WPA2"
-    if "WPA" in p:
-        return "WPA"
-    if "WEP" in p:
-        return "WEP"
-    if "OPN" in p or not p:
-        return "Open"
-    return privacy[:5]
-
 
 # ---------------------------------------------------------------------------
-# Rendering
+# PiTFT rendering
 # ---------------------------------------------------------------------------
-
-def signal_to_bars(signal_dbm):
-    """Convert signal strength in dBm to a bar count (0-4)."""
-    if signal_dbm >= -50:
-        return 4
-    if signal_dbm >= -60:
-        return 3
-    if signal_dbm >= -70:
-        return 2
-    if signal_dbm >= -80:
-        return 1
-    return 0
-
-
-def signal_color(signal_dbm):
-    """Return a color based on signal strength."""
-    if signal_dbm >= -50:
-        return GREEN
-    if signal_dbm >= -65:
-        return YELLOW
-    return RED
-
-
-def security_color(security):
-    """Return a color based on security type."""
-    if security == "Open":
-        return RED
-    if security == "WEP":
-        return YELLOW
-    return GREEN
-
 
 def render(display, networks, client_counts, font, font_sm):
-    """Render the network list with client counts to the display."""
+    """Render the network list with client counts to the PiTFT display."""
     image = Image.new("RGB", (DISPLAY_WIDTH, DISPLAY_HEIGHT), BLACK)
     draw = ImageDraw.Draw(image)
 
@@ -368,18 +221,16 @@ def render(display, networks, client_counts, font, font_sm):
     row_height = 11
     max_rows = (DISPLAY_HEIGHT - y) // row_height
 
-    for network in networks[:max_rows]:
-        ssid = network["ssid"] or "<hidden>"
+    for net in networks[:max_rows]:
+        ssid = net.ssid or "<hidden>"
         if len(ssid) > 12:
             ssid = ssid[:11] + "\u2026"
 
         draw.text((2, y), ssid, font=font_sm, fill=WHITE)
 
-        # Signal dBm
-        sig = network["signal"]
+        sig = net.signal
         draw.text((95, y), str(sig), font=font_sm, fill=signal_color(sig))
 
-        # Signal bars
         bars = signal_to_bars(sig)
         bar_x = 132
         for i in range(4):
@@ -390,13 +241,9 @@ def render(display, networks, client_counts, font, font_sm):
                 fill=color,
             )
 
-        # Security
-        sec = network["security"]
-        draw.text((165, y), sec, font=font_sm, fill=security_color(sec))
+        draw.text((165, y), net.security, font=font_sm, fill=security_color(net.security))
 
-        # Client count
-        bssid = network["bssid"].lower()
-        count = client_counts.get(bssid, 0)
+        count = net.clients
         count_color = ORANGE if count > 0 else DIM
         draw.text((215, y), str(count), font=font_sm, fill=count_color)
 
@@ -410,7 +257,7 @@ def render(display, networks, client_counts, font, font_sm):
 # ---------------------------------------------------------------------------
 
 def main():
-    """Main loop: airodump-ng + display."""
+    """Main loop: airodump-ng + PiTFT display."""
     display = setup_display()
     font, font_sm = load_fonts()
 
@@ -425,7 +272,7 @@ def main():
     enable_monitor_mode(MONITOR_INTERFACE)
     atexit.register(disable_monitor_mode, MONITOR_INTERFACE)
 
-    # Start airodump-ng (handles channel hopping + scanning + client tracking)
+    # Start airodump-ng
     airodump = AirodumpNG(MONITOR_INTERFACE)
     airodump.start()
     atexit.register(airodump.stop)
