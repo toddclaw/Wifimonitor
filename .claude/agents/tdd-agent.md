@@ -15,11 +15,15 @@ preserve what's already good.
 - `_split_nmcli_line()` correctly handles the escaped-colon edge case
 - `Network` is a clean dataclass with sensible defaults
 - `signal_to_bars()`, `signal_color()`, `security_color()` are pure, easily testable
+- `_pct_to_dbm()` clamps input to 0-100 — tested with boundary values
+- `build_table()` escapes attacker-controlled SSIDs/BSSIDs — tested with markup injection
+- `scan_wifi_nmcli()` handles timeout/missing-binary gracefully — tested with mocks
+- `main()` handles KeyboardInterrupt cleanly
+- `_minimal_env()` limits subprocess environment — tested
 
 ### Needs refactoring (tackle with TDD):
 
 - `scan_wifi_nmcli()` calls `subprocess.run` directly — inject a `CommandRunner` protocol
-- `main()` is untestable: infinite loop + direct `Console` instantiation — extract loop body
 - `_COLOR_MAP` lookup is brittle — unknown RGB silently returns "white"
 - Flat file structure — migrate toward `src/wifimonitor/` package layout
 

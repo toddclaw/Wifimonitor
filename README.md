@@ -1,23 +1,103 @@
 # Wifimonitor
 
-A Raspberry Pi WiFi monitor that passively scans and displays information about nearby WiFi networks.
+A Python WiFi monitoring tool that scans and displays nearby WiFi networks in a real-time terminal dashboard.
 
-## Overview
+Currently runs on **Linux laptops** using `nmcli` (NetworkManager). Raspberry Pi support with monitor mode is planned for a future phase.
 
-This project displays the following about nearby WiFi networks:
+## Features
 
-- **SSID & Security** -- The SSID and security type (WPA2, WPA3, WEP, Open, etc.) of all nearby WiFi networks.
-- **Connected Users** -- Where possible, detect how many users are connected to each network and display this count.
-- **Top DNS Domains** -- Where possible, detect the top DNS domains being requested and display a ranked chart with the number of requests for each.
-- **Unencrypted Traffic Tidbits** -- On networks that are either open or where a password has been provided, display tidbits of anything unencrypted that might be interesting.
+- **Real-time scanning** -- Continuously scans for nearby WiFi networks and refreshes the display.
+- **Signal strength** -- Shows signal in dBm with color-coded bar indicators (green/yellow/red).
+- **Security detection** -- Identifies Open, WEP, WPA, WPA2, and WPA3 networks.
+- **Hidden networks** -- Detects and displays hidden SSIDs.
+- **Rich TUI** -- Clean terminal interface using the [Rich](https://github.com/Textualize/rich) library.
 
-## Hardware
+## Requirements
 
-- **Raspberry Pi** (any model with USB support)
-- **USB WiFi Dongle** -- Used to enable promiscuous/monitor mode for passive packet capture.
-- **Adafruit Mini PiTFT - 135x240 Color TFT Add-on for Raspberry Pi** -- Used to show current WiFi monitor details on a compact display attached to the Pi.
+- Python 3.11+
+- Linux with NetworkManager (`nmcli`)
+- No root required for cached scan results; `sudo` enables fresh rescans
 
-## Tech
+## Quick Start
 
-- Written in **Python**
-- Runs on Raspberry Pi with a USB WiFi dongle in monitor mode
+```bash
+# Install dependencies
+pip install -r requirements-laptop.txt
+
+# Run with default interface
+python wifi_monitor_nitro5.py
+
+# Specify a wireless interface
+python wifi_monitor_nitro5.py wlan1
+
+# Run with sudo to force fresh rescans
+sudo python wifi_monitor_nitro5.py
+```
+
+Press `Ctrl+C` to exit cleanly.
+
+## Display Columns
+
+| Column   | Description                                      |
+|----------|--------------------------------------------------|
+| #        | Row number                                       |
+| SSID     | Network name (or `<hidden>` for hidden networks) |
+| BSSID    | Access point MAC address                         |
+| Ch       | WiFi channel (2.4 GHz and 5 GHz)                |
+| dBm      | Signal strength in dBm (-50 excellent, -100 none)|
+| Sig      | Visual signal bars (0-4)                         |
+| Security | WPA3, WPA2, WPA, WEP, or Open                   |
+
+## Project Structure
+
+```
+Wifimonitor/
+├── wifi_monitor_nitro5.py     # Laptop entry point (Rich TUI, nmcli)
+├── wifi_common.py             # Shared: Network dataclass, signal/color helpers,
+│                              #         airodump-ng CSV parser (Pi, future)
+├── requirements-laptop.txt    # Laptop dependencies (rich>=13.0,<15)
+├── requirements.txt           # Pi dependencies (future)
+├── tests/
+│   ├── test_wifi_monitor_nitro5.py   # 82 tests — parsing, rendering, scanning
+│   └── test_wifi_common.py           # 34 tests — helpers, airodump CSV parsing
+├── CLAUDE.md                  # Agent guide and coding standards
+└── .claude/agents/            # Claude agent definitions
+    ├── tdd-agent.md           # TDD / Software Craftsmanship
+    ├── devsecops-agent.md     # Security review, dependency audit
+    ├── red-team-agent.md      # Adversarial review
+    └── manager-agent.md       # Orchestrator (coordinates all agents)
+```
+
+## Testing
+
+```bash
+# Run all tests
+pytest tests/ -v
+
+# Run with coverage
+pytest tests/ -v --cov=. --cov-report=term-missing
+```
+
+116 tests cover parsing, signal helpers, security mapping, Rich table rendering, subprocess error handling, and input edge cases.
+
+## Security Hardening
+
+The codebase has been reviewed by DevSecOps and Red Team agents:
+
+- **No shell injection** -- All subprocess calls use list arguments, never `shell=True`.
+- **Markup escaping** -- SSIDs and BSSIDs are escaped via `rich.markup.escape()` before display to prevent Rich markup injection from attacker-controlled network names.
+- **Minimal subprocess environment** -- Child processes receive only `PATH`, `LC_ALL`, and `HOME`.
+- **Graceful error handling** -- Subprocess timeouts and failures return empty results instead of crashing.
+- **Input clamping** -- Signal percentage values are clamped to 0-100 before conversion.
+
+## Future Plans
+
+- **Raspberry Pi support** -- Monitor mode scanning via airodump-ng with PiTFT display output. The CSV parser (`parse_airodump_csv`) and shared data structures are already implemented.
+- **Package layout** -- Migrate to `src/wifimonitor/` package structure with `pyproject.toml`.
+- **Scanner protocol** -- Abstract `ScannerProtocol` interface for pluggable scan backends.
+
+## Hardware (Pi Phase)
+
+- Raspberry Pi (any model with USB support)
+- USB WiFi dongle for monitor mode
+- Adafruit Mini PiTFT 135x240 color display

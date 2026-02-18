@@ -16,47 +16,23 @@ unsparing. You prioritize findings by impact and provide concrete fixes.
 
 ## Current Codebase: Known Vulnerabilities & Design Flaws
 
-### P0 — Fix Before Merge
+### P0 — All Resolved
 
-**Rich markup injection via SSID**
-Any WiFi network can broadcast an SSID like `[bold red]pwned[/]` or a malformed
-markup string that crashes the Rich renderer. SSIDs are passed directly to
-`table.add_row()` without escaping.
+**Rich markup injection via SSID** -- RESOLVED.
+SSIDs and BSSIDs are now escaped via `rich.markup.escape()` in `build_table()`
+before being passed to `table.add_row()`. Verify this pattern is maintained in
+any future display code.
 
-```python
-# Every SSID must be escaped:
-from rich.markup import escape
-ssid_display = escape(net.ssid) if net.ssid else "[dim]<hidden>[/dim]"
-```
+**`main()` has no exit path** -- RESOLVED.
+`main()` now wraps the scan loop in a `try/except KeyboardInterrupt` block and
+exits cleanly with `sys.exit(0)`.
 
-**`main()` has no exit path**
-`while True` with no signal handling means Ctrl+C raises an unhandled exception
-and dumps a traceback to the terminal. For a TUI app this is ugly and unprofessional.
+### P1 — Remaining
 
-```python
-import signal
-def main():
-    signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
-    ...
-```
-
-### P1 — Fix This Sprint
-
-**`scan_wifi_nmcli()` is untestable as written**
-Direct `subprocess.run` calls cannot be tested without a real `nmcli` binary.
-The parsing logic (`parse_nmcli_output`) is already well-isolated — good.
-But the scanning function that calls subprocess needs a `CommandRunner` injection
-seam before the test suite grows around it in its current shape.
-
-**`_pct_to_dbm()` has no input validation**
-`pct` values outside 0-100 produce nonsensical dBm values silently.
-nmcli shouldn't return these, but malformed output or a future mock could.
-
-```python
-def _pct_to_dbm(pct: int) -> int:
-    pct = max(0, min(100, pct))
-    return (pct // 2) - 100
-```
+**`scan_wifi_nmcli()` calls subprocess directly**
+While exception handling (TimeoutExpired, FileNotFoundError, OSError) has been
+added, the function still calls `subprocess.run` directly. A `CommandRunner`
+injection seam would improve testability. Currently tested via `unittest.mock.patch`.
 
 **`_COLOR_MAP` silently returns "white" for unknown colors**
 `wifi_common.py` defines colors as RGB tuples. If a new color is added to
@@ -69,16 +45,16 @@ Rows with the wrong number of fields are skipped with no logging.
 During Pi development, silent data loss will make debugging very hard.
 At minimum, log skipped rows at DEBUG level.
 
+### Resolved (formerly P1/P2)
+
+- **`_pct_to_dbm()` input clamping** -- RESOLVED. Values are clamped to 0-100.
+- **Timeout recovery in scan loop** -- RESOLVED. `scan_wifi_nmcli()` catches
+  `TimeoutExpired`, `FileNotFoundError`, and `OSError`, returning an empty list.
+- **Environment variable leakage** -- RESOLVED. `_minimal_env()` passes only
+  PATH, LC_ALL, and HOME to subprocess calls.
+- **Unpinned dependency** -- RESOLVED. `requirements-laptop.txt` now pins `rich>=13.0,<15`.
+
 ### P2 — Track and Fix
-
-**No timeout recovery in the scan loop**
-If `nmcli` hangs beyond 15 seconds, `subprocess.run` raises `TimeoutExpired`
-but it's not caught in `scan_wifi_nmcli()`. The app will crash out of the
-`Live` context with a raw exception visible to the user.
-
-**`requirements-laptop.txt` has no pinned versions**
-`rich` with no version pin means `pip install` behavior changes when Rich
-releases breaking changes. Pin to at least a minimum version: `rich>=13.0,<14`.
 
 **Dual requirements files will diverge**
 `requirements.txt` and `requirements-laptop.txt` are separate files with no

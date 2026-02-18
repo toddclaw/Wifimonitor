@@ -16,13 +16,16 @@ Wifimonitor/
 ├── wifi_common.py             # Shared: Network dataclass, signal/color helpers,
 │                              #         airodump-ng CSV parser (Pi, future)
 ├── requirements.txt           # Pi requirements
-├── requirements-laptop.txt    # Laptop requirements (rich)
-├── tests/                     # Existing test directory
+├── requirements-laptop.txt    # Laptop requirements (rich>=13.0,<15)
+├── tests/
+│   ├── test_wifi_monitor_nitro5.py   # nmcli parsing, rendering, scanning tests
+│   └── test_wifi_common.py           # Helpers, airodump CSV parsing tests
 ├── .claude/
 │   └── agents/
 │       ├── tdd-agent.md
 │       ├── devsecops-agent.md
-│       └── red-team-agent.md
+│       ├── red-team-agent.md
+│       └── manager-agent.md
 └── .gitignore
 ```
 
@@ -81,16 +84,23 @@ Reference the agent at the start of a session to set its role:
 
 > "Using `.claude/agents/tdd-agent.md`, add tests for `parse_nmcli_output`."
 
-|Agent              |File                |Use When                                |
-|-------------------|--------------------|----------------------------------------|
-|TDD / Craftsmanship|`tdd-agent.md`      |Writing any production or test code     |
-|DevSecOps          |`devsecops-agent.md`|Security review, dependency audit, CI/CD|
-|Red Team           |`red-team-agent.md` |Adversarial review before merging       |
+|Agent              |File                 |Use When                                |
+|-------------------|---------------------|----------------------------------------|
+|TDD / Craftsmanship|`tdd-agent.md`       |Writing any production or test code     |
+|DevSecOps          |`devsecops-agent.md` |Security review, dependency audit, CI/CD|
+|Red Team           |`red-team-agent.md`  |Adversarial review before merging       |
+|Manager            |`manager-agent.md`   |Orchestrate all agents end-to-end       |
 
 ## Test Commands
 
 ```bash
-pytest tests/ -v --cov=src/wifimonitor --cov-report=term-missing
-mypy src/
-ruff check src/ tests/
+# Run all 116 tests
+pytest tests/ -v
+
+# Run with coverage
+pytest tests/ -v --cov=. --cov-report=term-missing
+
+# Linting (future — once src/ layout is adopted)
+# mypy src/
+# ruff check src/ tests/
 ```
