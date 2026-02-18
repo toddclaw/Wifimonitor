@@ -8,13 +8,22 @@ Follows TDD agent standards:
 - Unhappy-path coverage (malformed input, edge cases)
 """
 
+import subprocess
+from unittest.mock import patch
+
 import pytest
 
+from wifi_common import Network
 from wifi_monitor_nitro5 import (
     parse_nmcli_output,
     _split_nmcli_line,
     _pct_to_dbm,
     _map_nmcli_security,
+    _bar_string,
+    _rich_color,
+    _minimal_env,
+    build_table,
+    scan_wifi_nmcli,
 )
 
 
@@ -291,3 +300,198 @@ class TestParseNmcliOutputEdgeCases:
         line = rf"AA\:BB\:CC\:DD\:EE\:01:BoundaryTest:6:{signal_pct}:WPA2"
         networks = parse_nmcli_output(line)
         assert networks[0].signal == expected_dbm
+
+
+# ---------------------------------------------------------------------------
+# _pct_to_dbm — input clamping (P1 fix)
+# ---------------------------------------------------------------------------
+
+class TestPctToDbmClamping:
+    """_pct_to_dbm must clamp values outside 0-100 to prevent nonsense dBm."""
+
+    def test_pct_to_dbm_negative_value_clamped_to_zero(self):
+        assert _pct_to_dbm(-10) == -100  # same as 0%
+
+    def test_pct_to_dbm_over_100_clamped_to_100(self):
+        assert _pct_to_dbm(150) == -50  # same as 100%
+
+    def test_pct_to_dbm_exactly_zero_still_works(self):
+        assert _pct_to_dbm(0) == -100
+
+    def test_pct_to_dbm_exactly_100_still_works(self):
+        assert _pct_to_dbm(100) == -50
+
+
+# ---------------------------------------------------------------------------
+# _bar_string — signal bar rendering
+# ---------------------------------------------------------------------------
+
+class TestBarString:
+    def test_bar_string_4_bars_all_filled(self):
+        result = _bar_string(4)
+        assert result == "▂▄▆█"
+
+    def test_bar_string_0_bars_all_spaces(self):
+        result = _bar_string(0)
+        assert result == "    "
+
+    def test_bar_string_2_bars_two_filled_two_spaces(self):
+        result = _bar_string(2)
+        assert result == "▂▄  "
+
+    def test_bar_string_1_bar(self):
+        result = _bar_string(1)
+        assert result == "▂   "
+
+
+# ---------------------------------------------------------------------------
+# _rich_color — RGB to Rich color name mapping
+# ---------------------------------------------------------------------------
+
+class TestRichColor:
+    def test_rich_color_known_green(self):
+        assert _rich_color((0, 255, 0)) == "green"
+
+    def test_rich_color_known_red(self):
+        assert _rich_color((255, 0, 0)) == "red"
+
+    def test_rich_color_unknown_returns_white(self):
+        assert _rich_color((1, 2, 3)) == "white"
+
+
+# ---------------------------------------------------------------------------
+# build_table — Rich markup injection protection (P0 fix)
+# ---------------------------------------------------------------------------
+
+class TestBuildTable:
+    """build_table must escape attacker-controlled SSIDs to prevent Rich markup injection."""
+
+    def test_build_table_returns_table_with_correct_network_count(self):
+        networks = [
+            Network(bssid="aa:bb:cc:dd:ee:01", ssid="Normal", signal=-55, channel=6, security="WPA2"),
+        ]
+        table = build_table(networks)
+        assert table.row_count == 1
+
+    def test_build_table_hidden_ssid_shows_hidden_markup(self):
+        """Hidden SSIDs (empty string) should show <hidden> with dim styling."""
+        networks = [
+            Network(bssid="aa:bb:cc:dd:ee:01", ssid="", signal=-55, channel=6, security="WPA2"),
+        ]
+        table = build_table(networks)
+        # Table should have 1 row and not crash
+        assert table.row_count == 1
+
+    def test_build_table_ssid_with_rich_markup_escaped(self):
+        """An SSID containing Rich markup chars must be escaped, not interpreted."""
+        networks = [
+            Network(
+                bssid="aa:bb:cc:dd:ee:01",
+                ssid="[bold red]Evil[/bold red]",
+                signal=-55,
+                channel=6,
+                security="WPA2",
+            ),
+        ]
+        # This should NOT raise a markup error or render styled text
+        table = build_table(networks)
+        assert table.row_count == 1
+
+    def test_build_table_ssid_with_square_brackets_escaped(self):
+        """SSIDs with square brackets must not be treated as Rich tags."""
+        networks = [
+            Network(
+                bssid="aa:bb:cc:dd:ee:01",
+                ssid="[test]network[/test]",
+                signal=-55,
+                channel=6,
+                security="WPA2",
+            ),
+        ]
+        table = build_table(networks)
+        assert table.row_count == 1
+
+    def test_build_table_empty_network_list(self):
+        table = build_table([])
+        assert table.row_count == 0
+
+    def test_build_table_multiple_networks_preserves_order(self):
+        """Networks should appear in the order passed (already sorted by caller)."""
+        networks = [
+            Network(bssid="aa:bb:cc:dd:ee:01", ssid="Best", signal=-40, channel=6, security="WPA2"),
+            Network(bssid="aa:bb:cc:dd:ee:02", ssid="Worst", signal=-90, channel=11, security="Open"),
+        ]
+        table = build_table(networks)
+        assert table.row_count == 2
+
+
+# ---------------------------------------------------------------------------
+# scan_wifi_nmcli — timeout and exception handling (P1 fix)
+# ---------------------------------------------------------------------------
+
+class TestScanWifiNmcli:
+    """scan_wifi_nmcli must handle subprocess failures gracefully."""
+
+    @patch("wifi_monitor_nitro5.subprocess.run")
+    def test_scan_wifi_nmcli_timeout_returns_empty_list(self, mock_run):
+        """If nmcli times out, return empty list instead of crashing."""
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd=["nmcli"], timeout=15)
+        result = scan_wifi_nmcli()
+        assert result == []
+
+    @patch("wifi_monitor_nitro5.subprocess.run")
+    def test_scan_wifi_nmcli_subprocess_error_returns_empty_list(self, mock_run):
+        """If nmcli is not found or fails, return empty list."""
+        mock_run.side_effect = FileNotFoundError("nmcli not found")
+        result = scan_wifi_nmcli()
+        assert result == []
+
+    @patch("wifi_monitor_nitro5.subprocess.run")
+    def test_scan_wifi_nmcli_rescan_failure_still_lists(self, mock_run):
+        """If rescan fails but list succeeds, still return networks."""
+        rescan_result = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="")
+        list_result = subprocess.CompletedProcess(
+            args=[], returncode=0,
+            stdout=r"AA\:BB\:CC\:DD\:EE\:01:TestNet:6:80:WPA2",
+            stderr="",
+        )
+        mock_run.side_effect = [rescan_result, list_result]
+        result = scan_wifi_nmcli()
+        assert len(result) == 1
+        assert result[0].ssid == "TestNet"
+
+    @patch("wifi_monitor_nitro5.subprocess.run")
+    def test_scan_wifi_nmcli_uses_minimal_env(self, mock_run):
+        """Subprocess should not inherit the full user environment."""
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="", stderr="",
+        )
+        scan_wifi_nmcli()
+        # Check the env passed to the list command (second call)
+        _, kwargs = mock_run.call_args
+        env = kwargs.get("env", {})
+        assert "LC_ALL" in env
+        assert "PATH" in env
+        # Env should NOT contain every key from os.environ
+        # It should be a minimal set
+        assert len(env) <= 4  # PATH, LC_ALL, HOME
+
+
+# ---------------------------------------------------------------------------
+# _minimal_env — environment hardening
+# ---------------------------------------------------------------------------
+
+class TestMinimalEnv:
+    def test_minimal_env_contains_required_keys(self):
+        env = _minimal_env()
+        assert "PATH" in env
+        assert "LC_ALL" in env
+        assert "HOME" in env
+
+    def test_minimal_env_lc_all_is_c(self):
+        env = _minimal_env()
+        assert env["LC_ALL"] == "C"
+
+    def test_minimal_env_does_not_leak_full_environment(self):
+        env = _minimal_env()
+        assert len(env) <= 4

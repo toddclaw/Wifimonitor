@@ -19,6 +19,7 @@ import time
 
 from rich.console import Console
 from rich.live import Live
+from rich.markup import escape
 from rich.table import Table
 
 from wifi_common import Network, signal_to_bars, signal_color, security_color
@@ -47,16 +48,36 @@ def _rich_color(rgb: tuple) -> str:
 # nmcli scanning
 # ---------------------------------------------------------------------------
 
+def _minimal_env() -> dict[str, str]:
+    """Build a minimal environment for subprocess calls.
+
+    Only passes PATH, LC_ALL, and HOME — avoids leaking the full user
+    environment into child processes.
+    """
+    return {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "LC_ALL": "C",
+        "HOME": os.environ.get("HOME", ""),
+    }
+
+
 def scan_wifi_nmcli(interface: str | None = None) -> list[Network]:
     """Scan for WiFi networks using nmcli.
 
     Triggers a rescan first (needs root), then lists cached results.
     Falls back to cached results if rescan fails (non-root).
+    Returns an empty list if nmcli is unavailable or times out.
     """
+    env = _minimal_env()
+
     rescan_cmd = ["nmcli", "device", "wifi", "rescan"]
     if interface:
         rescan_cmd += ["ifname", interface]
-    subprocess.run(rescan_cmd, capture_output=True, timeout=15)
+
+    try:
+        subprocess.run(rescan_cmd, capture_output=True, timeout=15, env=env)
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass  # Rescan failure is non-fatal; fall through to list
 
     list_cmd = [
         "nmcli", "-t",
@@ -66,10 +87,13 @@ def scan_wifi_nmcli(interface: str | None = None) -> list[Network]:
     if interface:
         list_cmd += ["ifname", interface]
 
-    env = {**os.environ, "LC_ALL": "C"}
-    result = subprocess.run(
-        list_cmd, capture_output=True, text=True, timeout=15, env=env,
-    )
+    try:
+        result = subprocess.run(
+            list_cmd, capture_output=True, text=True, timeout=15, env=env,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return []
+
     return parse_nmcli_output(result.stdout)
 
 
@@ -134,7 +158,9 @@ def _pct_to_dbm(pct: int) -> int:
     nmcli maps dBm to percentage roughly as:
         dBm = (pct / 2) - 100
     This is the inverse of the common NM formula.
+    Values outside 0-100 are clamped to prevent nonsensical results.
     """
+    pct = max(0, min(100, pct))
     return (pct // 2) - 100
 
 
@@ -184,7 +210,7 @@ def build_table(networks: list[Network]) -> Table:
     table.add_column("Security", width=8)
 
     for i, net in enumerate(networks, 1):
-        ssid = net.ssid or "[dim]<hidden>[/dim]"
+        ssid = escape(net.ssid) if net.ssid else "[dim]<hidden>[/dim]"
         sig_c = _rich_color(signal_color(net.signal))
         sec_c = _rich_color(security_color(net.security))
         bars = signal_to_bars(net.signal)
@@ -193,7 +219,7 @@ def build_table(networks: list[Network]) -> Table:
         table.add_row(
             str(i),
             ssid,
-            net.bssid.upper(),
+            escape(net.bssid.upper()),
             str(net.channel),
             f"[{sig_c}]{net.signal}[/{sig_c}]",
             f"[{sig_c}]{bar_str}[/{sig_c}]",
@@ -207,18 +233,27 @@ def build_table(networks: list[Network]) -> Table:
 # Main
 # ---------------------------------------------------------------------------
 
-def main():
+def main() -> None:
+    """Run the WiFi monitor TUI loop.
+
+    Handles KeyboardInterrupt (Ctrl+C) gracefully so the terminal is left
+    clean when the user exits.
+    """
     interface = sys.argv[1] if len(sys.argv) > 1 else None
     console = Console()
 
     console.print("[bold cyan]WiFi Monitor[/bold cyan] — Acer Nitro 5")
     console.print(f"Scanning {'all interfaces' if not interface else interface}…\n")
 
-    with Live(console=console, refresh_per_second=1, screen=True) as live:
-        while True:
-            networks = scan_wifi_nmcli(interface)
-            live.update(build_table(networks))
-            time.sleep(SCAN_INTERVAL)
+    try:
+        with Live(console=console, refresh_per_second=1, screen=True) as live:
+            while True:
+                networks = scan_wifi_nmcli(interface)
+                live.update(build_table(networks))
+                time.sleep(SCAN_INTERVAL)
+    except KeyboardInterrupt:
+        console.print("\n[bold cyan]WiFi Monitor[/bold cyan] — stopped.")
+        sys.exit(0)
 
 
 if __name__ == "__main__":
