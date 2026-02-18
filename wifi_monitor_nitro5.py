@@ -6,13 +6,18 @@ real-time Rich terminal table.  No monitor mode or root required for
 basic scanning (NetworkManager caches recent scan results).
 
 Usage:
-    python wifi_monitor_nitro5.py            # default wlan0
-    python wifi_monitor_nitro5.py wlan1      # specify interface
-    sudo python wifi_monitor_nitro5.py       # force fresh scans
+    python wifi_monitor_nitro5.py                     # scan all interfaces
+    python wifi_monitor_nitro5.py -i wlan1            # specify interface
+    python wifi_monitor_nitro5.py -c creds.csv        # load credentials file
+    python wifi_monitor_nitro5.py -c creds.csv --connect  # auto-connect
+    sudo python wifi_monitor_nitro5.py                # force fresh scans
 """
 
+import argparse
+import csv
 import os
 import re
+import stat
 import subprocess
 import sys
 import time
@@ -59,6 +64,92 @@ def _minimal_env() -> dict[str, str]:
         "LC_ALL": "C",
         "HOME": os.environ.get("HOME", ""),
     }
+
+
+# ---------------------------------------------------------------------------
+# Credentials file
+# ---------------------------------------------------------------------------
+
+def load_credentials(filepath: str) -> dict[str, str]:
+    """Load SSID/passphrase pairs from a CSV file.
+
+    File format: one ``ssid,passphrase`` per line.  Lines starting with
+    ``#`` are comments.  Blank lines are ignored.  Fields may be quoted
+    to include commas.  Returns an empty dict if the file is missing or
+    unreadable.
+
+    Warns to stderr if the file is world-readable (permissions concern).
+    """
+    creds: dict[str, str] = {}
+
+    if not os.path.isfile(filepath):
+        return creds
+
+    # Check file permissions — warn if world-readable
+    try:
+        file_stat = os.stat(filepath)
+        if file_stat.st_mode & stat.S_IROTH:
+            print(
+                f"WARNING: credentials file '{filepath}' is world-readable. "
+                "Consider restricting permissions to 600.",
+                file=sys.stderr,
+            )
+    except OSError:
+        pass
+
+    try:
+        with open(filepath, newline="") as f:
+            reader = csv.reader(f)
+            for row in reader:
+                # Skip blank or comment lines
+                if not row or row[0].strip().startswith("#"):
+                    continue
+                if len(row) < 2:
+                    continue
+                ssid = row[0].strip()
+                passphrase = row[1].strip()
+                creds[ssid] = passphrase
+    except OSError:
+        return creds
+
+    return creds
+
+
+# ---------------------------------------------------------------------------
+# nmcli connection
+# ---------------------------------------------------------------------------
+
+def connect_wifi_nmcli(
+    ssid: str,
+    passphrase: str,
+    interface: str | None = None,
+) -> bool:
+    """Connect to a WiFi network using nmcli.
+
+    Args:
+        ssid: The network SSID to connect to.
+        passphrase: The network passphrase (empty string for open networks).
+        interface: Optional wireless interface name.
+
+    Returns:
+        True if the connection succeeded, False otherwise.
+    """
+    env = _minimal_env()
+    cmd = ["nmcli", "device", "wifi", "connect", ssid]
+
+    if passphrase:
+        cmd += ["password", passphrase]
+
+    if interface:
+        cmd += ["ifname", interface]
+
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=30, env=env,
+        )
+        return result.returncode == 0
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return False
 
 
 def scan_wifi_nmcli(interface: str | None = None) -> list[Network]:
@@ -190,8 +281,19 @@ def _bar_string(bars: int) -> str:
     return "".join(chars[i] if i < bars else " " for i in range(4))
 
 
-def build_table(networks: list[Network]) -> Table:
-    """Build a Rich Table displaying the scanned networks."""
+def build_table(
+    networks: list[Network],
+    credentials: dict[str, str] | None = None,
+) -> Table:
+    """Build a Rich Table displaying the scanned networks.
+
+    Args:
+        networks: List of scanned networks (already sorted by signal).
+        credentials: Optional dict of SSID -> passphrase.  When provided,
+            a "Key" column is added showing which networks have known
+            passphrases.
+    """
+    show_key = bool(credentials)
     table = Table(
         title="WiFi Monitor — Acer Nitro 5",
         title_style="bold cyan",
@@ -203,6 +305,8 @@ def build_table(networks: list[Network]) -> Table:
     )
     table.add_column("#", style="grey50", width=3, justify="right")
     table.add_column("SSID", style="white", min_width=15, max_width=30)
+    if show_key:
+        table.add_column("Key", justify="center", width=3)
     table.add_column("BSSID", style="grey50", width=17)
     table.add_column("Ch", justify="right", width=4)
     table.add_column("dBm", justify="right", width=5)
@@ -216,15 +320,22 @@ def build_table(networks: list[Network]) -> Table:
         bars = signal_to_bars(net.signal)
         bar_str = _bar_string(bars)
 
-        table.add_row(
+        row = [
             str(i),
             ssid,
+        ]
+        if show_key:
+            has_key = net.ssid in credentials if net.ssid else False
+            row.append("[green]*[/green]" if has_key else "")
+        row.extend([
             escape(net.bssid.upper()),
             str(net.channel),
             f"[{sig_c}]{net.signal}[/{sig_c}]",
             f"[{sig_c}]{bar_str}[/{sig_c}]",
             f"[{sec_c}]{net.security}[/{sec_c}]",
-        )
+        ])
+
+        table.add_row(*row)
 
     return table
 
@@ -233,23 +344,76 @@ def build_table(networks: list[Network]) -> Table:
 # Main
 # ---------------------------------------------------------------------------
 
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(
+        description="WiFi Monitor — Acer Nitro 5",
+    )
+    parser.add_argument(
+        "-i", "--interface",
+        help="wireless interface name (e.g. wlan0)",
+    )
+    parser.add_argument(
+        "-c", "--credentials",
+        metavar="FILE",
+        help="CSV file with ssid,passphrase pairs",
+    )
+    parser.add_argument(
+        "--connect",
+        action="store_true",
+        help="auto-connect to the strongest network with known credentials",
+    )
+    return parser.parse_args(argv)
+
+
 def main() -> None:
     """Run the WiFi monitor TUI loop.
 
     Handles KeyboardInterrupt (Ctrl+C) gracefully so the terminal is left
     clean when the user exits.
     """
-    interface = sys.argv[1] if len(sys.argv) > 1 else None
+    args = _parse_args()
     console = Console()
+    credentials: dict[str, str] | None = None
+    connected = False
+
+    if args.credentials:
+        credentials = load_credentials(args.credentials)
+        if credentials:
+            console.print(
+                f"[bold cyan]WiFi Monitor[/bold cyan] — "
+                f"loaded {len(credentials)} credential(s)"
+            )
+        else:
+            console.print(
+                "[bold cyan]WiFi Monitor[/bold cyan] — "
+                "[yellow]no credentials loaded[/yellow]"
+            )
 
     console.print("[bold cyan]WiFi Monitor[/bold cyan] — Acer Nitro 5")
-    console.print(f"Scanning {'all interfaces' if not interface else interface}…\n")
+    console.print(
+        f"Scanning {'all interfaces' if not args.interface else args.interface}…\n"
+    )
 
     try:
         with Live(console=console, refresh_per_second=1, screen=True) as live:
             while True:
-                networks = scan_wifi_nmcli(interface)
-                live.update(build_table(networks))
+                networks = scan_wifi_nmcli(args.interface)
+                live.update(build_table(networks, credentials=credentials))
+
+                # Auto-connect on first scan if requested
+                if args.connect and credentials and not connected:
+                    for net in networks:
+                        if net.ssid and net.ssid in credentials:
+                            ok = connect_wifi_nmcli(
+                                net.ssid,
+                                credentials[net.ssid],
+                                interface=args.interface,
+                            )
+                            if ok:
+                                connected = True
+                            break
+
                 time.sleep(SCAN_INTERVAL)
     except KeyboardInterrupt:
         console.print("\n[bold cyan]WiFi Monitor[/bold cyan] — stopped.")

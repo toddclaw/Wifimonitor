@@ -8,7 +8,9 @@ Follows TDD agent standards:
 - Unhappy-path coverage (malformed input, edge cases)
 """
 
+import os
 import subprocess
+import stat
 from unittest.mock import patch
 
 import pytest
@@ -24,6 +26,8 @@ from wifi_monitor_nitro5 import (
     _minimal_env,
     build_table,
     scan_wifi_nmcli,
+    load_credentials,
+    connect_wifi_nmcli,
 )
 
 
@@ -495,3 +499,218 @@ class TestMinimalEnv:
     def test_minimal_env_does_not_leak_full_environment(self):
         env = _minimal_env()
         assert len(env) <= 4
+
+
+# ---------------------------------------------------------------------------
+# load_credentials — credentials file parsing
+# ---------------------------------------------------------------------------
+
+class TestLoadCredentials:
+    """load_credentials parses a CSV file of ssid,passphrase pairs."""
+
+    def test_load_credentials_happy_path(self, tmp_path):
+        creds_file = tmp_path / "creds.csv"
+        creds_file.write_text("HomeNetwork,secretpass\nCoffeeShop,cafe2024\n")
+        result = load_credentials(str(creds_file))
+        assert result == {"HomeNetwork": "secretpass", "CoffeeShop": "cafe2024"}
+
+    def test_load_credentials_skips_comment_lines(self, tmp_path):
+        creds_file = tmp_path / "creds.csv"
+        creds_file.write_text("# This is a comment\nMyNet,pass123\n")
+        result = load_credentials(str(creds_file))
+        assert result == {"MyNet": "pass123"}
+
+    def test_load_credentials_skips_blank_lines(self, tmp_path):
+        creds_file = tmp_path / "creds.csv"
+        creds_file.write_text("\nMyNet,pass123\n\n\n")
+        result = load_credentials(str(creds_file))
+        assert result == {"MyNet": "pass123"}
+
+    def test_load_credentials_empty_file_returns_empty_dict(self, tmp_path):
+        creds_file = tmp_path / "creds.csv"
+        creds_file.write_text("")
+        result = load_credentials(str(creds_file))
+        assert result == {}
+
+    def test_load_credentials_missing_file_returns_empty_dict(self, tmp_path):
+        result = load_credentials(str(tmp_path / "nonexistent.csv"))
+        assert result == {}
+
+    def test_load_credentials_quoted_fields_with_commas(self, tmp_path):
+        """SSIDs or passphrases containing commas must be quoted in CSV."""
+        creds_file = tmp_path / "creds.csv"
+        creds_file.write_text('"My,Network","pass,word"\n')
+        result = load_credentials(str(creds_file))
+        assert result == {"My,Network": "pass,word"}
+
+    def test_load_credentials_malformed_line_too_few_fields_skipped(self, tmp_path):
+        creds_file = tmp_path / "creds.csv"
+        creds_file.write_text("OnlySSID\nGoodNet,goodpass\n")
+        result = load_credentials(str(creds_file))
+        assert result == {"GoodNet": "goodpass"}
+
+    def test_load_credentials_extra_fields_ignored(self, tmp_path):
+        creds_file = tmp_path / "creds.csv"
+        creds_file.write_text("MyNet,pass123,extra,fields\n")
+        result = load_credentials(str(creds_file))
+        assert result == {"MyNet": "pass123"}
+
+    def test_load_credentials_strips_whitespace_from_ssid_and_pass(self, tmp_path):
+        creds_file = tmp_path / "creds.csv"
+        creds_file.write_text("  MyNet  ,  pass123  \n")
+        result = load_credentials(str(creds_file))
+        assert result == {"MyNet": "pass123"}
+
+    def test_load_credentials_empty_passphrase_stored(self, tmp_path):
+        """Open networks can have empty passphrases."""
+        creds_file = tmp_path / "creds.csv"
+        creds_file.write_text("OpenNet,\n")
+        result = load_credentials(str(creds_file))
+        assert result == {"OpenNet": ""}
+
+    def test_load_credentials_warns_world_readable(self, tmp_path, capsys):
+        """Should warn (not fail) if file is world-readable."""
+        creds_file = tmp_path / "creds.csv"
+        creds_file.write_text("MyNet,pass123\n")
+        creds_file.chmod(0o644)
+        result = load_credentials(str(creds_file))
+        assert result == {"MyNet": "pass123"}
+        captured = capsys.readouterr()
+        assert "world-readable" in captured.err.lower() or "permissions" in captured.err.lower()
+
+    def test_load_credentials_no_warning_restrictive_permissions(self, tmp_path, capsys):
+        """Should not warn if file has restrictive permissions."""
+        creds_file = tmp_path / "creds.csv"
+        creds_file.write_text("MyNet,pass123\n")
+        creds_file.chmod(0o600)
+        result = load_credentials(str(creds_file))
+        assert result == {"MyNet": "pass123"}
+        captured = capsys.readouterr()
+        assert "world-readable" not in captured.err.lower()
+
+
+# ---------------------------------------------------------------------------
+# connect_wifi_nmcli — network connection
+# ---------------------------------------------------------------------------
+
+class TestConnectWifiNmcli:
+    """connect_wifi_nmcli joins a network via nmcli."""
+
+    @patch("wifi_monitor_nitro5.subprocess.run")
+    def test_connect_wifi_nmcli_success_returns_true(self, mock_run):
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="", stderr="",
+        )
+        result = connect_wifi_nmcli("TestNet", "password123")
+        assert result is True
+
+    @patch("wifi_monitor_nitro5.subprocess.run")
+    def test_connect_wifi_nmcli_failure_returns_false(self, mock_run):
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="Connection failed",
+        )
+        result = connect_wifi_nmcli("TestNet", "wrongpass")
+        assert result is False
+
+    @patch("wifi_monitor_nitro5.subprocess.run")
+    def test_connect_wifi_nmcli_timeout_returns_false(self, mock_run):
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd=["nmcli"], timeout=30)
+        result = connect_wifi_nmcli("TestNet", "password123")
+        assert result is False
+
+    @patch("wifi_monitor_nitro5.subprocess.run")
+    def test_connect_wifi_nmcli_nmcli_not_found_returns_false(self, mock_run):
+        mock_run.side_effect = FileNotFoundError("nmcli not found")
+        result = connect_wifi_nmcli("TestNet", "password123")
+        assert result is False
+
+    @patch("wifi_monitor_nitro5.subprocess.run")
+    def test_connect_wifi_nmcli_uses_list_args(self, mock_run):
+        """Must use list args, never shell=True."""
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="", stderr="",
+        )
+        connect_wifi_nmcli("TestNet", "password123")
+        args, kwargs = mock_run.call_args
+        cmd = args[0]
+        assert isinstance(cmd, list)
+        assert "nmcli" in cmd
+        assert "TestNet" in cmd
+        assert "password123" in cmd
+
+    @patch("wifi_monitor_nitro5.subprocess.run")
+    def test_connect_wifi_nmcli_with_interface(self, mock_run):
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="", stderr="",
+        )
+        connect_wifi_nmcli("TestNet", "pass", interface="wlan1")
+        args, kwargs = mock_run.call_args
+        cmd = args[0]
+        assert "ifname" in cmd
+        assert "wlan1" in cmd
+
+    @patch("wifi_monitor_nitro5.subprocess.run")
+    def test_connect_wifi_nmcli_uses_minimal_env(self, mock_run):
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="", stderr="",
+        )
+        connect_wifi_nmcli("TestNet", "pass")
+        _, kwargs = mock_run.call_args
+        env = kwargs.get("env", {})
+        assert "LC_ALL" in env
+        assert len(env) <= 4
+
+    @patch("wifi_monitor_nitro5.subprocess.run")
+    def test_connect_wifi_nmcli_open_network_empty_passphrase(self, mock_run):
+        """Open networks use empty passphrase — should still call nmcli."""
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="", stderr="",
+        )
+        result = connect_wifi_nmcli("OpenNet", "")
+        assert result is True
+        args, _ = mock_run.call_args
+        cmd = args[0]
+        # For open networks, password should not be in the command
+        assert "password" not in cmd
+
+
+# ---------------------------------------------------------------------------
+# build_table — credentials integration
+# ---------------------------------------------------------------------------
+
+class TestBuildTableWithCredentials:
+    """build_table shows a key indicator when credentials are provided."""
+
+    def test_build_table_with_credentials_has_key_column(self):
+        networks = [
+            Network(bssid="aa:bb:cc:dd:ee:01", ssid="Known", signal=-55, channel=6, security="WPA2"),
+        ]
+        creds = {"Known": "password"}
+        table = build_table(networks, credentials=creds)
+        col_names = [c.header for c in table.columns]
+        assert "Key" in col_names
+
+    def test_build_table_without_credentials_no_key_column(self):
+        networks = [
+            Network(bssid="aa:bb:cc:dd:ee:01", ssid="Test", signal=-55, channel=6, security="WPA2"),
+        ]
+        table = build_table(networks)
+        col_names = [c.header for c in table.columns]
+        assert "Key" not in col_names
+
+    def test_build_table_with_credentials_row_count_correct(self):
+        networks = [
+            Network(bssid="aa:bb:cc:dd:ee:01", ssid="Known", signal=-55, channel=6, security="WPA2"),
+            Network(bssid="aa:bb:cc:dd:ee:02", ssid="Unknown", signal=-70, channel=11, security="WPA2"),
+        ]
+        creds = {"Known": "password"}
+        table = build_table(networks, credentials=creds)
+        assert table.row_count == 2
+
+    def test_build_table_with_empty_credentials_no_key_column(self):
+        networks = [
+            Network(bssid="aa:bb:cc:dd:ee:01", ssid="Test", signal=-55, channel=6, security="WPA2"),
+        ]
+        table = build_table(networks, credentials={})
+        col_names = [c.header for c in table.columns]
+        assert "Key" not in col_names
