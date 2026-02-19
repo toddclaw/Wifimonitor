@@ -161,6 +161,7 @@ The codebase has been reviewed by DevSecOps and Red Team agents:
 - **Unify color mapping** (1 pt) -- `_COLOR_MAP` silently returns "white" for unknown RGB tuples. Consolidate color definitions so `wifi_common.py` and `wifi_monitor_nitro5.py` stay in sync automatically.
 - **Silent row skipping in airodump parser** (1 pt) -- `parse_airodump_csv()` drops malformed rows with no logging. Add `logging.debug()` for skipped rows to aid Pi-phase debugging.
 - **UX agent** (3 pts) -- Create a UX agent that evaluates and suggests improvements for both the CLI/TUI (Rich tables, layout, color, information density) and future GUI surfaces. Integrate into the manager pipeline alongside the existing review agents.
+- **Python 3.9 support for macOS** (2 pts) -- Support legacy macOS systems where the system Python is 3.9. Add `from __future__ import annotations` to all source files (defers PEP 604/585 annotation evaluation), lower `MIN_PYTHON` to `(3, 9)`, and verify no runtime use of union types.
 
 ### Security
 
