@@ -160,6 +160,7 @@ The codebase has been reviewed by DevSecOps and Red Team agents:
 - **Scanner and Renderer protocols** (3 pts) -- Define `ScannerProtocol` and `RendererProtocol` abstractions. Split `wifi_monitor_nitro5.py` into `NmcliScanner`, `RichRenderer`, and a thin `MonitorApp` coordinator (Single Responsibility).
 - **Unify color mapping** (1 pt) -- `_COLOR_MAP` silently returns "white" for unknown RGB tuples. Consolidate color definitions so `wifi_common.py` and `wifi_monitor_nitro5.py` stay in sync automatically.
 - **Silent row skipping in airodump parser** (1 pt) -- `parse_airodump_csv()` drops malformed rows with no logging. Add `logging.debug()` for skipped rows to aid Pi-phase debugging.
+- **UX agent** (3 pts) -- Create a UX agent that evaluates and suggests improvements for both the CLI/TUI (Rich tables, layout, color, information density) and future GUI surfaces. Integrate into the manager pipeline alongside the existing review agents.
 
 ### Security
 
