@@ -153,9 +153,22 @@ The codebase has been reviewed by DevSecOps and Red Team agents:
 
 ## Future Plans
 
-- **Raspberry Pi support** -- Monitor mode scanning via airodump-ng with PiTFT display output. The CSV parser (`parse_airodump_csv`) and shared data structures are already implemented.
-- **Package layout** -- Migrate to `src/wifimonitor/` package structure with `pyproject.toml`.
-- **Scanner protocol** -- Abstract `ScannerProtocol` interface for pluggable scan backends.
+### Refactoring
+
+- **Package layout** (3 pts) -- Migrate to `src/wifimonitor/` package structure with `pyproject.toml`, `__version__`, and console entry point. Unifies the dual requirements files into a single dependency spec.
+- **CommandRunner injection** (3 pts) -- Extract a `CommandRunner` protocol and inject it into `scan_wifi_nmcli()`, `connect_wifi_nmcli()`, and `DnsTracker` so subprocess calls are testable without `unittest.mock.patch`.
+- **Scanner and Renderer protocols** (3 pts) -- Define `ScannerProtocol` and `RendererProtocol` abstractions. Split `wifi_monitor_nitro5.py` into `NmcliScanner`, `RichRenderer`, and a thin `MonitorApp` coordinator (Single Responsibility).
+- **Unify color mapping** (1 pt) -- `_COLOR_MAP` silently returns "white" for unknown RGB tuples. Consolidate color definitions so `wifi_common.py` and `wifi_monitor_nitro5.py` stay in sync automatically.
+- **Silent row skipping in airodump parser** (1 pt) -- `parse_airodump_csv()` drops malformed rows with no logging. Add `logging.debug()` for skipped rows to aid Pi-phase debugging.
+
+### Security
+
+- **Input validation for BSSID and channel** (2 pts) -- Validate BSSID as MAC address format and channel as integer in range 1-196 before use. Currently accepted unchecked from nmcli/airodump output.
+- **CI/CD security pipeline** (2 pts) -- Create `.github/workflows/security.yml` with pip-audit, ruff, and mypy checks. Add `requirements-dev.txt` with dev/test tooling.
+
+### Features
+
+- **Raspberry Pi support** (8 pts) -- Monitor mode scanning via airodump-ng with PiTFT display output. The CSV parser (`parse_airodump_csv`) and shared data structures are already implemented.
 - **Deauth attack detection** (8 pts) -- Detect deauthentication/disassociation frames targeting your own network and alert in the TUI. Requires monitor mode capture and 802.11 management frame parsing.
 - **Rogue AP detection** (5 pts) -- Identify rogue access points impersonating known SSIDs with mismatched BSSIDs or unexpected channels. Works with existing nmcli scan data; needs a known-good baseline file.
 - **Unusual client behavior monitoring** (13 pts) -- Monitor for anomalous client activity on networks you own (e.g. rapid association/disassociation, probe floods). Requires monitor mode and rate-based anomaly heuristics.
