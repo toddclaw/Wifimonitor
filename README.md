@@ -121,6 +121,7 @@ Wifimonitor/
 │   └── test_wifi_common.py           #  34 tests — helpers, airodump CSV parsing
 ├── CLAUDE.md                  # Agent guide and coding standards
 └── .claude/agents/            # Claude agent definitions
+    ├── architect-agent.md     # Architecture research and design
     ├── tdd-agent.md           # TDD / Software Craftsmanship
     ├── devsecops-agent.md     # Security review, dependency audit
     ├── red-team-agent.md      # Adversarial review
