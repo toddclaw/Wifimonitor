@@ -156,6 +156,9 @@ The codebase has been reviewed by DevSecOps and Red Team agents:
 - **Raspberry Pi support** -- Monitor mode scanning via airodump-ng with PiTFT display output. The CSV parser (`parse_airodump_csv`) and shared data structures are already implemented.
 - **Package layout** -- Migrate to `src/wifimonitor/` package structure with `pyproject.toml`.
 - **Scanner protocol** -- Abstract `ScannerProtocol` interface for pluggable scan backends.
+- **Deauth attack detection** -- Detect deauthentication/disassociation frames targeting your own network and alert in the TUI.
+- **Rogue AP detection** -- Identify rogue access points impersonating known SSIDs with mismatched BSSIDs or unexpected channels.
+- **Unusual client behavior monitoring** -- Monitor for anomalous client activity on networks you own (e.g. rapid association/disassociation, probe floods).
 
 ## Hardware (Pi Phase)
 
