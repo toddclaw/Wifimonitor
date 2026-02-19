@@ -963,8 +963,8 @@ class TestMinPython:
         assert isinstance(MIN_PYTHON, tuple)
         assert len(MIN_PYTHON) == 2
 
-    def test_min_python_is_3_10(self):
-        assert MIN_PYTHON == (3, 10)
+    def test_min_python_is_3_9(self):
+        assert MIN_PYTHON == (3, 9)
 
     def test_current_interpreter_meets_minimum(self):
         import sys

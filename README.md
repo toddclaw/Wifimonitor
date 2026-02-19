@@ -16,7 +16,7 @@ Currently runs on **Linux laptops** using `nmcli` (NetworkManager). Raspberry Pi
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.9+
 - Linux with NetworkManager (`nmcli`)
 - No root required for cached scan results; `sudo` enables fresh rescans
 
@@ -117,8 +117,8 @@ Wifimonitor/
 ├── requirements-laptop.txt    # Laptop dependencies (rich>=13.0,<15)
 ├── requirements.txt           # Pi dependencies (future)
 ├── tests/
-│   ├── test_wifi_monitor_nitro5.py   # 138 tests — parsing, rendering, scanning, credentials, DNS
-│   └── test_wifi_common.py           #  34 tests — helpers, airodump CSV parsing
+│   ├── test_wifi_monitor_nitro5.py   # 142 tests — parsing, rendering, scanning, credentials, DNS
+│   └── test_wifi_common.py           #  63 tests — helpers, airodump CSV, validation, colors
 ├── CLAUDE.md                  # Agent guide and coding standards
 └── .claude/agents/            # Claude agent definitions
     ├── architect-agent.md     # Architecture research and design
@@ -138,7 +138,7 @@ pytest tests/ -v
 pytest tests/ -v --cov=. --cov-report=term-missing
 ```
 
-172 tests cover parsing, signal helpers, security mapping, Rich table rendering, subprocess error handling, credentials file loading, network connection, DNS query capture, and input edge cases.
+205 tests cover parsing, signal helpers, security mapping, Rich table rendering, subprocess error handling, credentials file loading, network connection, DNS query capture, input validation, and edge cases.
 
 ## Security Hardening
 
@@ -150,6 +150,7 @@ The codebase has been reviewed by DevSecOps and Red Team agents:
 - **Graceful error handling** -- Subprocess timeouts and failures return empty results instead of crashing.
 - **Input clamping** -- Signal percentage values are clamped to 0-100 before conversion.
 - **Credentials safety** -- Credentials file permissions are checked; warns if world-readable. Passphrases are never displayed in the TUI.
+- **Input validation** -- BSSID format (MAC regex) and channel range (1-196) validated via `is_valid_bssid()` and `is_valid_channel()`.
 
 ## Future Plans
 
@@ -158,14 +159,10 @@ The codebase has been reviewed by DevSecOps and Red Team agents:
 - **Package layout** (3 pts) -- Migrate to `src/wifimonitor/` package structure with `pyproject.toml`, `__version__`, and console entry point. Unifies the dual requirements files into a single dependency spec.
 - **CommandRunner injection** (3 pts) -- Extract a `CommandRunner` protocol and inject it into `scan_wifi_nmcli()`, `connect_wifi_nmcli()`, and `DnsTracker` so subprocess calls are testable without `unittest.mock.patch`.
 - **Scanner and Renderer protocols** (3 pts) -- Define `ScannerProtocol` and `RendererProtocol` abstractions. Split `wifi_monitor_nitro5.py` into `NmcliScanner`, `RichRenderer`, and a thin `MonitorApp` coordinator (Single Responsibility).
-- **Unify color mapping** (1 pt) -- `_COLOR_MAP` silently returns "white" for unknown RGB tuples. Consolidate color definitions so `wifi_common.py` and `wifi_monitor_nitro5.py` stay in sync automatically.
-- **Silent row skipping in airodump parser** (1 pt) -- `parse_airodump_csv()` drops malformed rows with no logging. Add `logging.debug()` for skipped rows to aid Pi-phase debugging.
 - **UX agent** (3 pts) -- Create a UX agent that evaluates and suggests improvements for both the CLI/TUI (Rich tables, layout, color, information density) and future GUI surfaces. Integrate into the manager pipeline alongside the existing review agents.
-- **Python 3.9 support for macOS** (2 pts) -- Support legacy macOS systems where the system Python is 3.9. Add `from __future__ import annotations` to all source files (defers PEP 604/585 annotation evaluation), lower `MIN_PYTHON` to `(3, 9)`, and verify no runtime use of union types.
 
 ### Security
 
-- **Input validation for BSSID and channel** (2 pts) -- Validate BSSID as MAC address format and channel as integer in range 1-196 before use. Currently accepted unchecked from nmcli/airodump output.
 - **CI/CD security pipeline** (2 pts) -- Create `.github/workflows/security.yml` with pip-audit, ruff, and mypy checks. Add `requirements-dev.txt` with dev/test tooling.
 
 ### Features

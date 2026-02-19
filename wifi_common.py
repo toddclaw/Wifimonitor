@@ -1,5 +1,7 @@
 """Shared data structures and helpers for WiFi Monitor variants."""
 
+from __future__ import annotations
+
 import csv
 import logging
 import re
