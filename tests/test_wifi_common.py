@@ -9,13 +9,9 @@ from wifi_common import (
     security_color,
     map_airodump_privacy,
     parse_airodump_csv,
+    COLOR_TO_RICH,
+    GREEN, YELLOW, RED, ORANGE, BLACK, WHITE, CYAN, GRAY, DIM,
 )
-
-# -- Colors used in wifi_common --
-GREEN = (0, 255, 0)
-YELLOW = (255, 255, 0)
-RED = (255, 0, 0)
-ORANGE = (255, 165, 0)
 
 
 # ---------------------------------------------------------------------------
@@ -231,3 +227,28 @@ class TestParseAirodumpCsv:
         networks, client_counts = parse_airodump_csv(header_only)
         assert networks == []
         assert client_counts == {}
+
+
+# ---------------------------------------------------------------------------
+# COLOR_TO_RICH — unified color mapping
+# ---------------------------------------------------------------------------
+
+class TestColorToRich:
+    """COLOR_TO_RICH maps every RGB constant to a Rich color name."""
+
+    def test_all_rgb_constants_have_rich_names(self):
+        for rgb in [BLACK, WHITE, GREEN, YELLOW, RED, CYAN, GRAY, DIM, ORANGE]:
+            assert rgb in COLOR_TO_RICH, f"{rgb} missing from COLOR_TO_RICH"
+
+    def test_green_maps_to_green(self):
+        assert COLOR_TO_RICH[GREEN] == "green"
+
+    def test_red_maps_to_red(self):
+        assert COLOR_TO_RICH[RED] == "red"
+
+    def test_gray_maps_to_grey50(self):
+        assert COLOR_TO_RICH[GRAY] == "grey50"
+
+    def test_all_values_are_strings(self):
+        for rgb, name in COLOR_TO_RICH.items():
+            assert isinstance(name, str), f"{rgb} maps to non-string {name!r}"

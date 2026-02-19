@@ -35,26 +35,17 @@ from rich.live import Live
 from rich.markup import escape
 from rich.table import Table
 
-from wifi_common import Network, signal_to_bars, signal_color, security_color
+from wifi_common import (
+    Network, signal_to_bars, signal_color, security_color, COLOR_TO_RICH,
+)
 
 # -- Timing --
 SCAN_INTERVAL = 10  # seconds between refreshes
 
-# Rich color names mapped from RGB tuples
-_COLOR_MAP = {
-    (0, 255, 0): "green",
-    (255, 255, 0): "yellow",
-    (255, 0, 0): "red",
-    (0, 255, 255): "cyan",
-    (128, 128, 128): "grey50",
-    (40, 40, 40): "grey15",
-    (255, 165, 0): "dark_orange",
-}
-
 
 def _rich_color(rgb: tuple) -> str:
     """Convert an RGB tuple to a Rich color name."""
-    return _COLOR_MAP.get(rgb, "white")
+    return COLOR_TO_RICH.get(rgb, "white")
 
 
 # ---------------------------------------------------------------------------

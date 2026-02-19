@@ -14,6 +14,20 @@ GRAY = (128, 128, 128)
 DIM = (40, 40, 40)
 ORANGE = (255, 165, 0)
 
+# Canonical mapping from RGB tuple to Rich color name.
+# Kept alongside the RGB constants so they cannot drift apart.
+COLOR_TO_RICH: dict[tuple, str] = {
+    BLACK: "black",
+    WHITE: "white",
+    GREEN: "green",
+    YELLOW: "yellow",
+    RED: "red",
+    CYAN: "cyan",
+    GRAY: "grey50",
+    DIM: "grey15",
+    ORANGE: "dark_orange",
+}
+
 
 # ---------------------------------------------------------------------------
 # Data structures
