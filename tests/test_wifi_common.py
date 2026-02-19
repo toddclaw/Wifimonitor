@@ -1,5 +1,7 @@
 """Tests for wifi_common shared functions."""
 
+import logging
+
 import pytest
 
 from wifi_common import (
@@ -252,3 +254,46 @@ class TestColorToRich:
     def test_all_values_are_strings(self):
         for rgb, name in COLOR_TO_RICH.items():
             assert isinstance(name, str), f"{rgb} maps to non-string {name!r}"
+
+
+# ---------------------------------------------------------------------------
+# parse_airodump_csv — debug logging for skipped rows
+# ---------------------------------------------------------------------------
+
+class TestParseAirodumpCsvLogging:
+    """parse_airodump_csv logs skipped malformed rows at DEBUG level."""
+
+    def test_malformed_ap_row_logs_debug(self, caplog):
+        """AP row with too few fields after header triggers a debug log."""
+        csv_data = (
+            "BSSID, First time seen, Last time seen, channel, Speed,"
+            " Privacy, Cipher, Authentication, Power, # beacons, # IV,"
+            " LAN IP, ID-length, ESSID, Key\r\n"
+            "AA:BB:CC:DD:EE:01, short row\r\n"
+        )
+        with caplog.at_level(logging.DEBUG, logger="wifi_common"):
+            networks, _ = parse_airodump_csv(csv_data)
+        assert len(networks) == 0
+        assert any("Skipped AP row" in msg for msg in caplog.messages)
+
+    def test_malformed_station_row_logs_debug(self, caplog):
+        """Station row with too few fields after header triggers a debug log."""
+        csv_data = (
+            "BSSID, First time seen, Last time seen, channel, Speed,"
+            " Privacy, Cipher, Authentication, Power, # beacons, # IV,"
+            " LAN IP, ID-length, ESSID, Key\r\n"
+            "\r\n"
+            "Station MAC, First time seen, Last time seen, Power, # packets,"
+            " BSSID, Probed ESSIDs\r\n"
+            "11:22:33:44:55:01, short\r\n"
+        )
+        with caplog.at_level(logging.DEBUG, logger="wifi_common"):
+            parse_airodump_csv(csv_data)
+        assert any("Skipped station row" in msg for msg in caplog.messages)
+
+    def test_valid_rows_produce_no_skip_log(self, caplog):
+        """Well-formed CSV produces no skip debug messages."""
+        with caplog.at_level(logging.DEBUG, logger="wifi_common"):
+            parse_airodump_csv(SAMPLE_AIRODUMP_CSV)
+        skip_msgs = [m for m in caplog.messages if "Skipped" in m]
+        assert skip_msgs == []

@@ -1,7 +1,10 @@
 """Shared data structures and helpers for WiFi Monitor variants."""
 
 import csv
+import logging
 from dataclasses import dataclass, field
+
+logger = logging.getLogger(__name__)
 
 # -- Colors (RGB tuples for PiTFT; also used as constants by Rich TUI) --
 BLACK = (0, 0, 0)
@@ -128,6 +131,8 @@ def parse_airodump_csv(content: str) -> tuple[list[Network], dict[str, int]]:
                 header = row
                 continue
             if header is None or len(row) < 14:
+                if header is not None:
+                    logger.debug("Skipped AP row with %d fields (need 14): %s", len(row), row)
                 continue
 
             bssid = row[0].lower()
@@ -169,6 +174,8 @@ def parse_airodump_csv(content: str) -> tuple[list[Network], dict[str, int]]:
                     header = row
                     continue
                 if header is None or len(row) < 6:
+                    if header is not None:
+                        logger.debug("Skipped station row with %d fields (need 6): %s", len(row), row)
                     continue
 
                 bssid = row[5].strip().lower()
