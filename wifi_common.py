@@ -2,6 +2,7 @@
 
 import csv
 import logging
+import re
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
@@ -81,6 +82,23 @@ def security_color(security: str) -> tuple:
     if security == "WEP":
         return YELLOW
     return GREEN
+
+
+# ---------------------------------------------------------------------------
+# Input validation
+# ---------------------------------------------------------------------------
+
+_BSSID_RE = re.compile(r"^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$")
+
+
+def is_valid_bssid(bssid: str) -> bool:
+    """Return True if *bssid* is a valid MAC address (colon-separated hex)."""
+    return bool(_BSSID_RE.match(bssid))
+
+
+def is_valid_channel(channel: int) -> bool:
+    """Return True if *channel* is in the valid WiFi range (1-196)."""
+    return 1 <= channel <= 196
 
 
 # ---------------------------------------------------------------------------

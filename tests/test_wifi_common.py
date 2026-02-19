@@ -11,6 +11,8 @@ from wifi_common import (
     security_color,
     map_airodump_privacy,
     parse_airodump_csv,
+    is_valid_bssid,
+    is_valid_channel,
     COLOR_TO_RICH,
     GREEN, YELLOW, RED, ORANGE, BLACK, WHITE, CYAN, GRAY, DIM,
 )
@@ -297,3 +299,49 @@ class TestParseAirodumpCsvLogging:
             parse_airodump_csv(SAMPLE_AIRODUMP_CSV)
         skip_msgs = [m for m in caplog.messages if "Skipped" in m]
         assert skip_msgs == []
+
+
+# ---------------------------------------------------------------------------
+# is_valid_bssid — MAC address format validation
+# ---------------------------------------------------------------------------
+
+class TestIsValidBssid:
+    """is_valid_bssid validates MAC address format."""
+
+    @pytest.mark.parametrize("bssid", [
+        "aa:bb:cc:dd:ee:ff",
+        "00:11:22:33:44:55",
+        "AA:BB:CC:DD:EE:FF",
+        "aA:bB:cC:dD:eE:fF",
+    ])
+    def test_valid_bssids(self, bssid):
+        assert is_valid_bssid(bssid) is True
+
+    @pytest.mark.parametrize("bssid", [
+        "",
+        "not-a-mac",
+        "aa:bb:cc:dd:ee",
+        "aa:bb:cc:dd:ee:ff:00",
+        "gg:hh:ii:jj:kk:ll",
+        "aa-bb-cc-dd-ee-ff",
+        "aabbccddeeff",
+        "aa:bb:cc:dd:ee:zz",
+    ])
+    def test_invalid_bssids(self, bssid):
+        assert is_valid_bssid(bssid) is False
+
+
+# ---------------------------------------------------------------------------
+# is_valid_channel — WiFi channel range validation
+# ---------------------------------------------------------------------------
+
+class TestIsValidChannel:
+    """is_valid_channel validates WiFi channel numbers."""
+
+    @pytest.mark.parametrize("channel", [1, 6, 11, 36, 149, 165])
+    def test_valid_channels(self, channel):
+        assert is_valid_channel(channel) is True
+
+    @pytest.mark.parametrize("channel", [0, -1, 197, 1000])
+    def test_invalid_channels(self, channel):
+        assert is_valid_channel(channel) is False

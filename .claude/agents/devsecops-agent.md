@@ -60,8 +60,8 @@ def _minimal_env() -> dict[str, str]:
 
 ### Input Validation
 
-- [ ] BSSIDs are validated as MAC address format before use: `re.match(r'^([0-9a-f]{2}:){5}[0-9a-f]{2}$', bssid)`
-- [ ] Channel values are validated as integers in range 1-196
+- [x] BSSIDs are validated via `is_valid_bssid()` in `wifi_common.py` (MAC format regex)
+- [x] Channel values are validated via `is_valid_channel()` in `wifi_common.py` (range 1-196)
 - [x] Signal percentage values are clamped to 0-100 in `_pct_to_dbm()` before conversion
 
 ### Dependency Security
