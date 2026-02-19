@@ -94,7 +94,7 @@ Reference the agent at the start of a session to set its role:
 ## Test Commands
 
 ```bash
-# Run all 140 tests
+# Run all 172 tests
 pytest tests/ -v
 
 # Run with coverage

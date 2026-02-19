@@ -11,7 +11,7 @@ Follows TDD agent standards:
 import os
 import subprocess
 import stat
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 import pytest
 
@@ -28,6 +28,10 @@ from wifi_monitor_nitro5 import (
     scan_wifi_nmcli,
     load_credentials,
     connect_wifi_nmcli,
+    parse_tcpdump_dns_line,
+    DnsTracker,
+    build_dns_table,
+    _parse_args,
 )
 
 
@@ -714,3 +718,234 @@ class TestBuildTableWithCredentials:
         table = build_table(networks, credentials={})
         col_names = [c.header for c in table.columns]
         assert "Key" not in col_names
+
+
+# ---------------------------------------------------------------------------
+# parse_tcpdump_dns_line — DNS query extraction from tcpdump output
+# ---------------------------------------------------------------------------
+
+class TestParseTcpdumpDnsLine:
+    """parse_tcpdump_dns_line extracts the queried domain from a tcpdump line."""
+
+    def test_a_record_query_extracts_domain(self):
+        line = "20:15:30.123 IP 192.168.1.100.54321 > 8.8.8.8.53: 65432+ A? google.com. (28)"
+        assert parse_tcpdump_dns_line(line) == "google.com"
+
+    def test_aaaa_record_query_extracts_domain(self):
+        line = "20:15:30.123 IP 192.168.1.100.54321 > 8.8.8.8.53: 65432+ AAAA? example.org. (32)"
+        assert parse_tcpdump_dns_line(line) == "example.org"
+
+    def test_subdomain_preserved(self):
+        line = "20:15:30.123 IP 192.168.1.100.54321 > 8.8.8.8.53: 65432+ A? cdn.images.example.com. (40)"
+        assert parse_tcpdump_dns_line(line) == "cdn.images.example.com"
+
+    def test_ptr_record_query(self):
+        line = "20:15:30.123 IP 192.168.1.100.54321 > 8.8.8.8.53: 65432+ PTR? 1.0.168.192.in-addr.arpa. (44)"
+        assert parse_tcpdump_dns_line(line) == "1.0.168.192.in-addr.arpa"
+
+    def test_https_record_query(self):
+        line = "20:15:30.123 IP 192.168.1.100.54321 > 8.8.8.8.53: 65432+ HTTPS? cloudflare.com. (32)"
+        assert parse_tcpdump_dns_line(line) == "cloudflare.com"
+
+    def test_mx_record_query(self):
+        line = "20:15:30.123 IP 192.168.1.100.54321 > 8.8.8.8.53: 65432+ MX? mail.example.com. (35)"
+        assert parse_tcpdump_dns_line(line) == "mail.example.com"
+
+    def test_response_line_returns_none(self):
+        """DNS responses don't contain the ?-pattern for query type."""
+        line = "20:15:30.123 IP 8.8.8.8.53 > 192.168.1.100.54321: 65432 1/0/0 A 93.184.216.34 (50)"
+        assert parse_tcpdump_dns_line(line) is None
+
+    def test_empty_line_returns_none(self):
+        assert parse_tcpdump_dns_line("") is None
+
+    def test_non_dns_line_returns_none(self):
+        line = "20:15:30.123 IP 192.168.1.100.80 > 10.0.0.1.12345: Flags [S], seq 12345"
+        assert parse_tcpdump_dns_line(line) is None
+
+    def test_trailing_dot_stripped(self):
+        line = "20:15:30.123 IP 192.168.1.100.54321 > 8.8.8.8.53: 65432+ A? trailing.dot.com. (30)"
+        result = parse_tcpdump_dns_line(line)
+        assert result == "trailing.dot.com"
+        assert not result.endswith(".")
+
+    def test_domain_with_hyphen(self):
+        line = "20:15:30.123 IP 192.168.1.100.54321 > 8.8.8.8.53: 65432+ A? my-site.example.com. (38)"
+        assert parse_tcpdump_dns_line(line) == "my-site.example.com"
+
+    def test_domain_with_numbers(self):
+        line = "20:15:30.123 IP 192.168.1.100.54321 > 8.8.8.8.53: 65432+ A? s3.us-east-1.amazonaws.com. (44)"
+        assert parse_tcpdump_dns_line(line) == "s3.us-east-1.amazonaws.com"
+
+
+# ---------------------------------------------------------------------------
+# DnsTracker — thread-safe DNS query counter
+# ---------------------------------------------------------------------------
+
+class TestDnsTracker:
+    """DnsTracker tracks DNS domain query frequencies."""
+
+    def test_record_increments_count(self):
+        tracker = DnsTracker()
+        tracker.record("google.com")
+        tracker.record("google.com")
+        tracker.record("example.com")
+        top = tracker.top(10)
+        assert top[0] == ("google.com", 2)
+        assert top[1] == ("example.com", 1)
+
+    def test_top_limits_results(self):
+        tracker = DnsTracker()
+        for i in range(20):
+            tracker.record(f"domain{i}.com")
+        assert len(tracker.top(5)) == 5
+
+    def test_top_empty_tracker_returns_empty_list(self):
+        tracker = DnsTracker()
+        assert tracker.top(10) == []
+
+    def test_top_sorted_by_count_descending(self):
+        tracker = DnsTracker()
+        tracker.record("rare.com")
+        for _ in range(5):
+            tracker.record("common.com")
+        for _ in range(3):
+            tracker.record("medium.com")
+        top = tracker.top(10)
+        assert top[0] == ("common.com", 5)
+        assert top[1] == ("medium.com", 3)
+        assert top[2] == ("rare.com", 1)
+
+    def test_top_zero_returns_empty(self):
+        tracker = DnsTracker()
+        tracker.record("google.com")
+        assert tracker.top(0) == []
+
+    @patch("wifi_monitor_nitro5.subprocess.Popen")
+    def test_start_returns_true_when_tcpdump_available(self, mock_popen):
+        mock_proc = MagicMock()
+        mock_proc.stdout = iter([])
+        mock_popen.return_value = mock_proc
+        tracker = DnsTracker()
+        assert tracker.start() is True
+        tracker.stop()
+
+    @patch("wifi_monitor_nitro5.subprocess.Popen")
+    def test_start_returns_false_when_tcpdump_not_found(self, mock_popen):
+        mock_popen.side_effect = FileNotFoundError("tcpdump not found")
+        tracker = DnsTracker()
+        assert tracker.start() is False
+
+    @patch("wifi_monitor_nitro5.subprocess.Popen")
+    def test_start_uses_list_args(self, mock_popen):
+        mock_proc = MagicMock()
+        mock_proc.stdout = iter([])
+        mock_popen.return_value = mock_proc
+        tracker = DnsTracker()
+        tracker.start()
+        args, kwargs = mock_popen.call_args
+        cmd = args[0]
+        assert isinstance(cmd, list)
+        assert "tcpdump" in cmd
+        tracker.stop()
+
+    @patch("wifi_monitor_nitro5.subprocess.Popen")
+    def test_start_with_interface_includes_iflag(self, mock_popen):
+        mock_proc = MagicMock()
+        mock_proc.stdout = iter([])
+        mock_popen.return_value = mock_proc
+        tracker = DnsTracker()
+        tracker.start(interface="wlan0")
+        args, _ = mock_popen.call_args
+        cmd = args[0]
+        assert "-i" in cmd
+        assert "wlan0" in cmd
+        tracker.stop()
+
+    @patch("wifi_monitor_nitro5.subprocess.Popen")
+    def test_start_uses_minimal_env(self, mock_popen):
+        mock_proc = MagicMock()
+        mock_proc.stdout = iter([])
+        mock_popen.return_value = mock_proc
+        tracker = DnsTracker()
+        tracker.start()
+        _, kwargs = mock_popen.call_args
+        env = kwargs.get("env", {})
+        assert "LC_ALL" in env
+        assert len(env) <= 4
+        tracker.stop()
+
+    @patch("wifi_monitor_nitro5.subprocess.Popen")
+    def test_stop_terminates_process(self, mock_popen):
+        mock_proc = MagicMock()
+        mock_proc.stdout = iter([])
+        mock_proc.wait.return_value = 0
+        mock_popen.return_value = mock_proc
+        tracker = DnsTracker()
+        tracker.start()
+        tracker.stop()
+        mock_proc.terminate.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# build_dns_table — DNS top domains display
+# ---------------------------------------------------------------------------
+
+class TestBuildDnsTable:
+    """build_dns_table renders a ranked table of DNS domains."""
+
+    def test_build_dns_table_with_domains_correct_row_count(self):
+        domains = [("google.com", 42), ("example.com", 10)]
+        table = build_dns_table(domains)
+        assert table.row_count == 2
+
+    def test_build_dns_table_empty_list(self):
+        table = build_dns_table([])
+        assert table.row_count == 0
+
+    def test_build_dns_table_escapes_domain_names(self):
+        """Domain names are external data and must be escaped for Rich."""
+        domains = [("[bold]evil.com[/bold]", 1)]
+        table = build_dns_table(domains)
+        assert table.row_count == 1  # should not crash
+
+    def test_build_dns_table_has_expected_columns(self):
+        domains = [("google.com", 5)]
+        table = build_dns_table(domains)
+        col_names = [c.header for c in table.columns]
+        assert "#" in col_names
+        assert "Domain" in col_names
+        assert "Count" in col_names
+
+    def test_build_dns_table_single_domain(self):
+        domains = [("test.com", 1)]
+        table = build_dns_table(domains)
+        assert table.row_count == 1
+
+
+# ---------------------------------------------------------------------------
+# _parse_args — CLI argument parsing
+# ---------------------------------------------------------------------------
+
+class TestParseArgs:
+    """_parse_args parses CLI arguments correctly."""
+
+    def test_parse_args_dns_flag_default_false(self):
+        args = _parse_args([])
+        assert args.dns is False
+
+    def test_parse_args_dns_flag_set(self):
+        args = _parse_args(["--dns"])
+        assert args.dns is True
+
+    def test_parse_args_dns_with_interface(self):
+        args = _parse_args(["--dns", "-i", "wlan0"])
+        assert args.dns is True
+        assert args.interface == "wlan0"
+
+    def test_parse_args_all_flags_combined(self):
+        args = _parse_args(["-i", "wlan0", "-c", "creds.csv", "--connect", "--dns"])
+        assert args.interface == "wlan0"
+        assert args.credentials == "creds.csv"
+        assert args.connect is True
+        assert args.dns is True

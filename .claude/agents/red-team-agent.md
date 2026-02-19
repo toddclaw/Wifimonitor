@@ -53,6 +53,10 @@ At minimum, log skipped rows at DEBUG level.
 - **Environment variable leakage** -- RESOLVED. `_minimal_env()` passes only
   PATH, LC_ALL, and HOME to subprocess calls.
 - **Unpinned dependency** -- RESOLVED. `requirements-laptop.txt` now pins `rich>=13.0,<15`.
+- **DNS capture feature** -- REVIEWED. `DnsTracker` uses list args for tcpdump,
+  `_minimal_env()`, daemon thread, graceful stop with terminate/kill fallback.
+  Domain names escaped via `rich.markup.escape()` in `build_dns_table()`.
+  32 tests cover parsing, tracker, table rendering, and subprocess mocking.
 
 ### P2 — Track and Fix
 

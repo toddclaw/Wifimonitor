@@ -15,6 +15,8 @@ automatically in CI — not just reviewed manually.
 |Inherited environment variables leaking sensitive data|Low       |Medium  |Mitigated — `_minimal_env()` passes only PATH/LC_ALL/HOME  |
 |Subprocess timeout/crash in scan loop                 |Medium    |Medium  |Mitigated — try/except for TimeoutExpired/FileNotFoundError|
 |Dependency CVE (rich or future deps)                  |Medium    |Variable|Partial — `rich>=13.0,<15` pinned; no automated scanning yet|
+|DNS domain names exploiting Rich markup in display     |Medium    |Medium  |Mitigated — domains escaped via `rich.markup.escape()`     |
+|tcpdump subprocess resource leak on crash              |Low       |Medium  |Mitigated — stop() terminates+kills; daemon thread cleanup |
 |Elevated privilege abuse (future sudo/monitor mode)   |High (Pi) |High    |Future — design privilege drop before Pi phase             |
 |BSSID/SSID data written to unencrypted logs           |Low       |Low     |Open — no logging yet, enforce policy when added           |
 

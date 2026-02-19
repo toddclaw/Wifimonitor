@@ -11,6 +11,7 @@ Currently runs on **Linux laptops** using `nmcli` (NetworkManager). Raspberry Pi
 - **Security detection** -- Identifies Open, WEP, WPA, WPA2, and WPA3 networks.
 - **Hidden networks** -- Detects and displays hidden SSIDs.
 - **Credentials file** -- Load SSID/passphrase pairs from a CSV file to identify known networks and optionally auto-connect.
+- **DNS query capture** -- Live capture and display of DNS queries in a ranked "top" style table (requires root / tcpdump).
 - **Rich TUI** -- Clean terminal interface using the [Rich](https://github.com/Textualize/rich) library.
 
 ## Requirements
@@ -36,6 +37,12 @@ python wifi_monitor_nitro5.py -c credentials.csv
 
 # Auto-connect to the strongest known network
 python wifi_monitor_nitro5.py -c credentials.csv --connect
+
+# Capture and display DNS queries (requires sudo)
+sudo python wifi_monitor_nitro5.py --dns
+
+# Combine all features
+sudo python wifi_monitor_nitro5.py --dns -c credentials.csv --connect
 
 # Run with sudo to force fresh rescans
 sudo python wifi_monitor_nitro5.py
@@ -69,6 +76,24 @@ chmod 600 credentials.csv
 
 The tool will warn to stderr if the file is world-readable.
 
+## DNS Query Capture
+
+The `--dns` flag enables real-time DNS query capture using `tcpdump`. A second table appears below the network list, ranking queried domain names by frequency in a "top" style display.
+
+```bash
+# Start with DNS capture (requires root for tcpdump)
+sudo python wifi_monitor_nitro5.py --dns
+
+# DNS capture with credentials and auto-connect
+sudo python wifi_monitor_nitro5.py --dns -c credentials.csv --connect
+```
+
+- Requires root privileges (tcpdump needs raw socket access).
+- Uses a background thread to read tcpdump output without blocking the scan loop.
+- Domain names are extracted from DNS query packets (A, AAAA, PTR, MX, CNAME, TXT, SRV, HTTPS, etc.).
+- The top 15 most-queried domains are displayed, updated every scan cycle.
+- If tcpdump is not installed or cannot start, the feature is silently disabled and the normal network table is shown.
+
 ## Display Columns
 
 | Column   | Description                                               |
@@ -92,7 +117,7 @@ Wifimonitor/
 ├── requirements-laptop.txt    # Laptop dependencies (rich>=13.0,<15)
 ├── requirements.txt           # Pi dependencies (future)
 ├── tests/
-│   ├── test_wifi_monitor_nitro5.py   # 107 tests — parsing, rendering, scanning, credentials
+│   ├── test_wifi_monitor_nitro5.py   # 138 tests — parsing, rendering, scanning, credentials, DNS
 │   └── test_wifi_common.py           #  34 tests — helpers, airodump CSV parsing
 ├── CLAUDE.md                  # Agent guide and coding standards
 └── .claude/agents/            # Claude agent definitions
@@ -112,14 +137,14 @@ pytest tests/ -v
 pytest tests/ -v --cov=. --cov-report=term-missing
 ```
 
-140 tests cover parsing, signal helpers, security mapping, Rich table rendering, subprocess error handling, credentials file loading, network connection, and input edge cases.
+172 tests cover parsing, signal helpers, security mapping, Rich table rendering, subprocess error handling, credentials file loading, network connection, DNS query capture, and input edge cases.
 
 ## Security Hardening
 
 The codebase has been reviewed by DevSecOps and Red Team agents:
 
 - **No shell injection** -- All subprocess calls use list arguments, never `shell=True`.
-- **Markup escaping** -- SSIDs and BSSIDs are escaped via `rich.markup.escape()` before display to prevent Rich markup injection from attacker-controlled network names.
+- **Markup escaping** -- SSIDs, BSSIDs, and DNS domain names are escaped via `rich.markup.escape()` before display to prevent Rich markup injection from attacker-controlled strings.
 - **Minimal subprocess environment** -- Child processes receive only `PATH`, `LC_ALL`, and `HOME`.
 - **Graceful error handling** -- Subprocess timeouts and failures return empty results instead of crashing.
 - **Input clamping** -- Signal percentage values are clamped to 0-100 before conversion.

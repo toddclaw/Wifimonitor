@@ -10,19 +10,22 @@ Usage:
     python wifi_monitor_nitro5.py -i wlan1            # specify interface
     python wifi_monitor_nitro5.py -c creds.csv        # load credentials file
     python wifi_monitor_nitro5.py -c creds.csv --connect  # auto-connect
-    sudo python wifi_monitor_nitro5.py                # force fresh scans
+    sudo python wifi_monitor_nitro5.py --dns          # capture DNS queries
+    sudo python wifi_monitor_nitro5.py --dns -c creds.csv --connect
 """
 
 import argparse
+import collections
 import csv
 import os
 import re
 import stat
 import subprocess
 import sys
+import threading
 import time
 
-from rich.console import Console
+from rich.console import Console, Group
 from rich.live import Live
 from rich.markup import escape
 from rich.table import Table
@@ -150,6 +153,103 @@ def connect_wifi_nmcli(
         return result.returncode == 0
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return False
+
+
+# ---------------------------------------------------------------------------
+# DNS query capture (requires root / tcpdump)
+# ---------------------------------------------------------------------------
+
+_DNS_QUERY_RE = re.compile(
+    r"\b(?:A|AAAA|PTR|MX|CNAME|TXT|SRV|SOA|NS|ANY|HTTPS|SVCB)\?\s+(\S+?)\.?\s"
+)
+
+
+def parse_tcpdump_dns_line(line: str) -> str | None:
+    """Extract the queried domain name from a tcpdump output line.
+
+    Only matches DNS *query* lines (those containing ``A?``, ``AAAA?``, etc.).
+    Response lines are ignored.  Returns the domain without trailing dot,
+    or None if the line is not a DNS query.
+    """
+    match = _DNS_QUERY_RE.search(line)
+    if match:
+        return match.group(1).rstrip(".")
+    return None
+
+
+class DnsTracker:
+    """Thread-safe DNS query frequency tracker.
+
+    Uses a background thread to read tcpdump output and count queried
+    domain names.  Call ``start()`` to begin capture and ``stop()`` to
+    terminate.  Use ``top(n)`` to retrieve the *n* most queried domains.
+    """
+
+    def __init__(self) -> None:
+        self._counts: collections.Counter[str] = collections.Counter()
+        self._lock = threading.Lock()
+        self._process: subprocess.Popen | None = None
+        self._thread: threading.Thread | None = None
+
+    def record(self, domain: str) -> None:
+        """Increment the query count for *domain* (thread-safe)."""
+        with self._lock:
+            self._counts[domain] += 1
+
+    def top(self, n: int = 15) -> list[tuple[str, int]]:
+        """Return the *n* most queried domains as ``(domain, count)`` pairs."""
+        with self._lock:
+            return self._counts.most_common(n)
+
+    def start(self, interface: str | None = None) -> bool:
+        """Start capturing DNS queries via tcpdump.
+
+        Returns True if tcpdump was launched successfully, False if
+        tcpdump is not installed or cannot be started.
+        """
+        cmd = ["tcpdump", "-l", "-n", "udp", "port", "53"]
+        if interface:
+            cmd = ["tcpdump", "-l", "-n", "-i", interface, "udp", "port", "53"]
+
+        env = _minimal_env()
+        try:
+            self._process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+            )
+        except (FileNotFoundError, OSError):
+            return False
+
+        self._thread = threading.Thread(target=self._reader_loop, daemon=True)
+        self._thread.start()
+        return True
+
+    def stop(self) -> None:
+        """Terminate the tcpdump process and wait for the reader thread."""
+        if self._process:
+            self._process.terminate()
+            try:
+                self._process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self._process.kill()
+            self._process = None
+        if self._thread:
+            self._thread.join(timeout=2)
+            self._thread = None
+
+    def _reader_loop(self) -> None:
+        """Read DNS queries from tcpdump stdout (runs in background thread)."""
+        try:
+            assert self._process is not None and self._process.stdout is not None
+            for line in self._process.stdout:
+                domain = parse_tcpdump_dns_line(line)
+                if domain:
+                    self.record(domain)
+        except (ValueError, OSError):
+            pass  # Process was terminated
 
 
 def scan_wifi_nmcli(interface: str | None = None) -> list[Network]:
@@ -340,6 +440,32 @@ def build_table(
     return table
 
 
+def build_dns_table(domains: list[tuple[str, int]]) -> Table:
+    """Build a Rich Table showing the top queried DNS domains.
+
+    Args:
+        domains: List of (domain, count) pairs, already sorted by count
+            descending (as returned by DnsTracker.top()).
+    """
+    table = Table(
+        title="DNS Queries (top domains)",
+        title_style="bold cyan",
+        caption=f"{len(domains)} domains tracked",
+        caption_style="grey50",
+        expand=True,
+        show_lines=False,
+        padding=(0, 1),
+    )
+    table.add_column("#", style="grey50", width=3, justify="right")
+    table.add_column("Domain", style="white", min_width=20, max_width=50)
+    table.add_column("Count", justify="right", width=6)
+
+    for i, (domain, count) in enumerate(domains, 1):
+        table.add_row(str(i), escape(domain), str(count))
+
+    return table
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -363,6 +489,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="auto-connect to the strongest network with known credentials",
     )
+    parser.add_argument(
+        "--dns",
+        action="store_true",
+        help="capture and display DNS queries (requires root / tcpdump)",
+    )
     return parser.parse_args(argv)
 
 
@@ -376,6 +507,7 @@ def main() -> None:
     console = Console()
     credentials: dict[str, str] | None = None
     connected = False
+    dns_tracker: DnsTracker | None = None
 
     if args.credentials:
         credentials = load_credentials(args.credentials)
@@ -390,6 +522,20 @@ def main() -> None:
                 "[yellow]no credentials loaded[/yellow]"
             )
 
+    if args.dns:
+        dns_tracker = DnsTracker()
+        if dns_tracker.start(interface=args.interface):
+            console.print(
+                "[bold cyan]WiFi Monitor[/bold cyan] — "
+                "[green]DNS capture started[/green]"
+            )
+        else:
+            console.print(
+                "[bold cyan]WiFi Monitor[/bold cyan] — "
+                "[yellow]DNS capture failed (tcpdump not found or no permission)[/yellow]"
+            )
+            dns_tracker = None
+
     console.print("[bold cyan]WiFi Monitor[/bold cyan] — Acer Nitro 5")
     console.print(
         f"Scanning {'all interfaces' if not args.interface else args.interface}…\n"
@@ -399,7 +545,13 @@ def main() -> None:
         with Live(console=console, refresh_per_second=1, screen=True) as live:
             while True:
                 networks = scan_wifi_nmcli(args.interface)
-                live.update(build_table(networks, credentials=credentials))
+                network_table = build_table(networks, credentials=credentials)
+
+                if dns_tracker is not None:
+                    dns_table = build_dns_table(dns_tracker.top())
+                    live.update(Group(network_table, dns_table))
+                else:
+                    live.update(network_table)
 
                 # Auto-connect on first scan if requested
                 if args.connect and credentials and not connected:
@@ -416,6 +568,8 @@ def main() -> None:
 
                 time.sleep(SCAN_INTERVAL)
     except KeyboardInterrupt:
+        if dns_tracker is not None:
+            dns_tracker.stop()
         console.print("\n[bold cyan]WiFi Monitor[/bold cyan] — stopped.")
         sys.exit(0)
 
