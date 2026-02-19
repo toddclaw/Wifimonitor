@@ -17,6 +17,7 @@ import pytest
 
 from wifi_common import Network
 from wifi_monitor_nitro5 import (
+    MIN_PYTHON,
     parse_nmcli_output,
     _split_nmcli_line,
     _pct_to_dbm,
@@ -949,3 +950,22 @@ class TestParseArgs:
         assert args.credentials == "creds.csv"
         assert args.connect is True
         assert args.dns is True
+
+
+# ---------------------------------------------------------------------------
+# MIN_PYTHON — version enforcement
+# ---------------------------------------------------------------------------
+
+class TestMinPython:
+    """MIN_PYTHON enforces the minimum Python version."""
+
+    def test_min_python_is_tuple(self):
+        assert isinstance(MIN_PYTHON, tuple)
+        assert len(MIN_PYTHON) == 2
+
+    def test_min_python_is_3_10(self):
+        assert MIN_PYTHON == (3, 10)
+
+    def test_current_interpreter_meets_minimum(self):
+        import sys
+        assert sys.version_info >= MIN_PYTHON

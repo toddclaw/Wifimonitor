@@ -16,7 +16,7 @@ Currently runs on **Linux laptops** using `nmcli` (NetworkManager). Raspberry Pi
 
 ## Requirements
 
-- Python 3.11+
+- Python 3.10+
 - Linux with NetworkManager (`nmcli`)
 - No root required for cached scan results; `sudo` enables fresh rescans
 

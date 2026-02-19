@@ -53,7 +53,7 @@ Wifimonitor/
 
 ## Language & Platform
 
-- **Language:** Python 3.11+
+- **Language:** Python 3.10+ (enforced at runtime in `wifi_monitor_nitro5.py`)
 - **Primary target:** Linux laptop (Acer Nitro 5), `nmcli` for scanning
 - **Future target:** Raspberry Pi, airodump-ng/monitor mode
 - **Display:** Rich terminal TUI (`rich` library)

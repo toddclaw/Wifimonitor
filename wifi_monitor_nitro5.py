@@ -14,6 +14,12 @@ Usage:
     sudo python wifi_monitor_nitro5.py --dns -c creds.csv --connect
 """
 
+import sys
+
+MIN_PYTHON = (3, 10)
+if sys.version_info < MIN_PYTHON:
+    sys.exit(f"Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]}+ is required (found {sys.version}).")
+
 import argparse
 import collections
 import csv
@@ -21,7 +27,6 @@ import os
 import re
 import stat
 import subprocess
-import sys
 import threading
 import time
 
