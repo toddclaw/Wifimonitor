@@ -967,3 +967,151 @@ class TestMinPython:
     def test_current_interpreter_meets_minimum(self):
         import sys
         assert sys.version_info >= MIN_PYTHON
+
+
+# ---------------------------------------------------------------------------
+# CommandRunner injection — subprocess testing without mock.patch
+# ---------------------------------------------------------------------------
+
+class _FakeRunner:
+    """A fake CommandRunner for injection-based tests."""
+
+    def __init__(self):
+        self.run_calls: list[tuple[list[str], dict]] = []
+        self.popen_calls: list[tuple[list[str], dict]] = []
+        self._run_results: list = []
+        self._run_side_effects: list = []
+        self._popen_result = None
+
+    def set_run_results(self, *results):
+        self._run_results = list(results)
+
+    def set_run_side_effect(self, exc):
+        self._run_side_effects = [exc]
+
+    def set_popen_result(self, proc):
+        self._popen_result = proc
+
+    def set_popen_side_effect(self, exc):
+        self._popen_result = exc
+
+    def run(self, cmd, **kwargs):
+        self.run_calls.append((cmd, kwargs))
+        if self._run_side_effects:
+            raise self._run_side_effects.pop(0)
+        if self._run_results:
+            return self._run_results.pop(0)
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+    def popen(self, cmd, **kwargs):
+        self.popen_calls.append((cmd, kwargs))
+        if isinstance(self._popen_result, Exception):
+            raise self._popen_result
+        return self._popen_result
+
+
+class TestScanWifiNmcliInjection:
+    """scan_wifi_nmcli accepts an injected runner — no mock.patch needed."""
+
+    def test_scan_returns_networks_via_injected_runner(self):
+        fake = _FakeRunner()
+        rescan = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        listing = subprocess.CompletedProcess(
+            args=[], returncode=0,
+            stdout=r"AA\:BB\:CC\:DD\:EE\:01:TestNet:6:80:WPA2",
+            stderr="",
+        )
+        fake.set_run_results(rescan, listing)
+        result = scan_wifi_nmcli(runner=fake)
+        assert len(result) == 1
+        assert result[0].ssid == "TestNet"
+
+    def test_scan_timeout_via_injected_runner(self):
+        fake = _FakeRunner()
+        fake.set_run_side_effect(subprocess.TimeoutExpired(cmd=["nmcli"], timeout=15))
+        result = scan_wifi_nmcli(runner=fake)
+        assert result == []
+
+    def test_scan_passes_env_to_runner(self):
+        fake = _FakeRunner()
+        scan_wifi_nmcli(runner=fake)
+        assert len(fake.run_calls) >= 1
+        _, kwargs = fake.run_calls[-1]
+        env = kwargs.get("env", {})
+        assert "LC_ALL" in env
+        assert "PATH" in env
+        assert len(env) <= 4
+
+    def test_scan_with_interface_via_injected_runner(self):
+        fake = _FakeRunner()
+        scan_wifi_nmcli(interface="wlan1", runner=fake)
+        # Both rescan and list commands should contain the interface
+        for cmd, _ in fake.run_calls:
+            assert "ifname" in cmd
+            assert "wlan1" in cmd
+
+
+class TestConnectWifiNmcliInjection:
+    """connect_wifi_nmcli accepts an injected runner."""
+
+    def test_connect_success_via_injected_runner(self):
+        fake = _FakeRunner()
+        fake.set_run_results(
+            subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+        )
+        assert connect_wifi_nmcli("TestNet", "pass", runner=fake) is True
+
+    def test_connect_failure_via_injected_runner(self):
+        fake = _FakeRunner()
+        fake.set_run_results(
+            subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="err"),
+        )
+        assert connect_wifi_nmcli("TestNet", "pass", runner=fake) is False
+
+    def test_connect_timeout_via_injected_runner(self):
+        fake = _FakeRunner()
+        fake.set_run_side_effect(subprocess.TimeoutExpired(cmd=["nmcli"], timeout=30))
+        assert connect_wifi_nmcli("TestNet", "pass", runner=fake) is False
+
+    def test_connect_cmd_includes_ssid_and_password(self):
+        fake = _FakeRunner()
+        connect_wifi_nmcli("MyNet", "secret", runner=fake)
+        cmd, _ = fake.run_calls[0]
+        assert "MyNet" in cmd
+        assert "secret" in cmd
+        assert isinstance(cmd, list)
+
+
+class TestDnsTrackerInjection:
+    """DnsTracker accepts an injected runner."""
+
+    def test_start_uses_injected_runner(self):
+        fake = _FakeRunner()
+        mock_proc = MagicMock()
+        mock_proc.stdout = iter([])
+        fake.set_popen_result(mock_proc)
+        tracker = DnsTracker(runner=fake)
+        assert tracker.start() is True
+        assert len(fake.popen_calls) == 1
+        cmd, _ = fake.popen_calls[0]
+        assert "tcpdump" in cmd
+        tracker.stop()
+
+    def test_start_failure_via_injected_runner(self):
+        fake = _FakeRunner()
+        fake.set_popen_side_effect(FileNotFoundError("tcpdump not found"))
+        tracker = DnsTracker(runner=fake)
+        assert tracker.start() is False
+
+    def test_start_passes_env_to_runner(self):
+        fake = _FakeRunner()
+        mock_proc = MagicMock()
+        mock_proc.stdout = iter([])
+        fake.set_popen_result(mock_proc)
+        tracker = DnsTracker(runner=fake)
+        tracker.start()
+        _, kwargs = fake.popen_calls[0]
+        env = kwargs.get("env", {})
+        assert "LC_ALL" in env
+        assert len(env) <= 4
+        tracker.stop()

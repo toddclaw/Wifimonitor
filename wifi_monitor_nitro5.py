@@ -39,10 +39,12 @@ from rich.table import Table
 
 from wifi_common import (
     Network, signal_to_bars, signal_color, security_color, COLOR_TO_RICH,
+    CommandRunner, SubprocessRunner,
 )
 
-# -- Timing --
+# -- Defaults --
 SCAN_INTERVAL = 10  # seconds between refreshes
+_DEFAULT_RUNNER = SubprocessRunner()
 
 
 def _rich_color(rgb: tuple) -> str:
@@ -124,6 +126,8 @@ def connect_wifi_nmcli(
     ssid: str,
     passphrase: str,
     interface: str | None = None,
+    *,
+    runner: CommandRunner | None = None,
 ) -> bool:
     """Connect to a WiFi network using nmcli.
 
@@ -131,10 +135,12 @@ def connect_wifi_nmcli(
         ssid: The network SSID to connect to.
         passphrase: The network passphrase (empty string for open networks).
         interface: Optional wireless interface name.
+        runner: Optional CommandRunner for subprocess calls (testing seam).
 
     Returns:
         True if the connection succeeded, False otherwise.
     """
+    runner = runner or _DEFAULT_RUNNER
     env = _minimal_env()
     cmd = ["nmcli", "device", "wifi", "connect", ssid]
 
@@ -145,9 +151,7 @@ def connect_wifi_nmcli(
         cmd += ["ifname", interface]
 
     try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=30, env=env,
-        )
+        result = runner.run(cmd, capture_output=True, text=True, timeout=30, env=env)
         return result.returncode == 0
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return False
@@ -181,9 +185,13 @@ class DnsTracker:
     Uses a background thread to read tcpdump output and count queried
     domain names.  Call ``start()`` to begin capture and ``stop()`` to
     terminate.  Use ``top(n)`` to retrieve the *n* most queried domains.
+
+    Args:
+        runner: Optional CommandRunner for subprocess calls (testing seam).
     """
 
-    def __init__(self) -> None:
+    def __init__(self, runner: CommandRunner | None = None) -> None:
+        self._runner = runner or _DEFAULT_RUNNER
         self._counts: collections.Counter[str] = collections.Counter()
         self._lock = threading.Lock()
         self._process: subprocess.Popen | None = None
@@ -211,7 +219,7 @@ class DnsTracker:
 
         env = _minimal_env()
         try:
-            self._process = subprocess.Popen(
+            self._process = self._runner.popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -250,13 +258,22 @@ class DnsTracker:
             pass  # Process was terminated
 
 
-def scan_wifi_nmcli(interface: str | None = None) -> list[Network]:
+def scan_wifi_nmcli(
+    interface: str | None = None,
+    *,
+    runner: CommandRunner | None = None,
+) -> list[Network]:
     """Scan for WiFi networks using nmcli.
 
     Triggers a rescan first (needs root), then lists cached results.
     Falls back to cached results if rescan fails (non-root).
     Returns an empty list if nmcli is unavailable or times out.
+
+    Args:
+        interface: Optional wireless interface name.
+        runner: Optional CommandRunner for subprocess calls (testing seam).
     """
+    runner = runner or _DEFAULT_RUNNER
     env = _minimal_env()
 
     rescan_cmd = ["nmcli", "device", "wifi", "rescan"]
@@ -264,7 +281,7 @@ def scan_wifi_nmcli(interface: str | None = None) -> list[Network]:
         rescan_cmd += ["ifname", interface]
 
     try:
-        subprocess.run(rescan_cmd, capture_output=True, timeout=15, env=env)
+        runner.run(rescan_cmd, capture_output=True, timeout=15, env=env)
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         pass  # Rescan failure is non-fatal; fall through to list
 
@@ -277,7 +294,7 @@ def scan_wifi_nmcli(interface: str | None = None) -> list[Network]:
         list_cmd += ["ifname", interface]
 
     try:
-        result = subprocess.run(
+        result = runner.run(
             list_cmd, capture_output=True, text=True, timeout=15, env=env,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):

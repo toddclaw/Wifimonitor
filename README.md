@@ -120,8 +120,8 @@ Wifimonitor/
 ├── requirements.txt           # Pi dependencies (future)
 ├── .github/workflows/ci.yml   # CI pipeline (test, lint, security)
 ├── tests/
-│   ├── test_wifi_monitor_nitro5.py   # 142 tests — parsing, rendering, scanning, credentials, DNS
-│   └── test_wifi_common.py           #  63 tests — helpers, airodump CSV, validation, colors
+│   ├── test_wifi_monitor_nitro5.py   # 153 tests — parsing, rendering, scanning, credentials, DNS, injection
+│   └── test_wifi_common.py           #  69 tests — helpers, airodump CSV, validation, colors, protocol
 ├── CLAUDE.md                  # Agent guide and coding standards
 └── .claude/agents/            # Claude agent definitions
     ├── architect-agent.md     # Architecture research and design
@@ -142,7 +142,7 @@ pytest tests/ -v
 pytest tests/ -v --cov=. --cov-report=term-missing
 ```
 
-205 tests cover parsing, signal helpers, security mapping, Rich table rendering, subprocess error handling, credentials file loading, network connection, DNS query capture, input validation, and edge cases.
+222 tests cover parsing, signal helpers, security mapping, Rich table rendering, subprocess error handling, credentials file loading, network connection, DNS query capture, input validation, CommandRunner injection, and edge cases.
 
 ## Security Hardening
 
@@ -162,7 +162,6 @@ The codebase has been reviewed by DevSecOps and Red Team agents:
 ### Refactoring
 
 - **Package layout** (3 pts) -- Migrate to `src/wifimonitor/` package structure with `pyproject.toml`, `__version__`, and console entry point. Unifies the dual requirements files into a single dependency spec.
-- **CommandRunner injection** (3 pts) -- Extract a `CommandRunner` protocol and inject it into `scan_wifi_nmcli()`, `connect_wifi_nmcli()`, and `DnsTracker` so subprocess calls are testable without `unittest.mock.patch`.
 - **Scanner and Renderer protocols** (3 pts) -- Define `ScannerProtocol` and `RendererProtocol` abstractions. Split `wifi_monitor_nitro5.py` into `NmcliScanner`, `RichRenderer`, and a thin `MonitorApp` coordinator (Single Responsibility).
 - **UX agent** (3 pts) -- Create a UX agent that evaluates and suggests improvements for both the CLI/TUI (Rich tables, layout, color, information density) and future GUI surfaces. Integrate into the manager pipeline alongside the existing review agents.
 

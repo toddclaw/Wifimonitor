@@ -5,7 +5,9 @@ from __future__ import annotations
 import csv
 import logging
 import re
+import subprocess
 from dataclasses import dataclass
+from typing import Any, Protocol
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +51,82 @@ class Network:
     channel: int = 0
     security: str = "Open"
     clients: int = 0
+
+
+# ---------------------------------------------------------------------------
+# Command runner protocol (subprocess injection seam)
+# ---------------------------------------------------------------------------
+
+class CommandRunner(Protocol):
+    """Protocol for running external commands.
+
+    Provides an injection seam so callers can substitute a fake runner in
+    tests instead of patching ``subprocess`` globally.
+    """
+
+    def run(
+        self,
+        cmd: list[str],
+        *,
+        capture_output: bool = True,
+        text: bool = True,
+        timeout: int | None = None,
+        env: dict[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[Any]:
+        """Run *cmd* and return a CompletedProcess."""
+        ...  # pragma: no cover
+
+    def popen(
+        self,
+        cmd: list[str],
+        *,
+        stdout: int | None = None,
+        stderr: int | None = None,
+        text: bool = True,
+        env: dict[str, str] | None = None,
+    ) -> subprocess.Popen[Any]:
+        """Launch *cmd* asynchronously and return a Popen handle."""
+        ...  # pragma: no cover
+
+
+class SubprocessRunner:
+    """Default CommandRunner that delegates to the real ``subprocess`` module."""
+
+    def run(
+        self,
+        cmd: list[str],
+        *,
+        capture_output: bool = True,
+        text: bool = True,
+        timeout: int | None = None,
+        env: dict[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[Any]:
+        """Run *cmd* via ``subprocess.run``."""
+        return subprocess.run(
+            cmd,
+            capture_output=capture_output,
+            text=text,
+            timeout=timeout,
+            env=env,
+        )
+
+    def popen(
+        self,
+        cmd: list[str],
+        *,
+        stdout: int | None = None,
+        stderr: int | None = None,
+        text: bool = True,
+        env: dict[str, str] | None = None,
+    ) -> subprocess.Popen[Any]:
+        """Launch *cmd* via ``subprocess.Popen``."""
+        return subprocess.Popen(
+            cmd,
+            stdout=stdout,
+            stderr=stderr,
+            text=text,
+            env=env,
+        )
 
 
 # ---------------------------------------------------------------------------

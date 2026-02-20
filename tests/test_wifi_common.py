@@ -13,6 +13,8 @@ from wifi_common import (
     parse_airodump_csv,
     is_valid_bssid,
     is_valid_channel,
+    CommandRunner,
+    SubprocessRunner,
     COLOR_TO_RICH,
     GREEN, YELLOW, RED, ORANGE, BLACK, WHITE, CYAN, GRAY, DIM,
 )
@@ -345,3 +347,54 @@ class TestIsValidChannel:
     @pytest.mark.parametrize("channel", [0, -1, 197, 1000])
     def test_invalid_channels(self, channel):
         assert is_valid_channel(channel) is False
+
+
+# ---------------------------------------------------------------------------
+# CommandRunner protocol & SubprocessRunner
+# ---------------------------------------------------------------------------
+
+class TestCommandRunnerProtocol:
+    """CommandRunner protocol defines the subprocess injection seam."""
+
+    def test_subprocess_runner_satisfies_protocol(self):
+        """SubprocessRunner must be a structural subtype of CommandRunner."""
+        runner: CommandRunner = SubprocessRunner()
+        assert hasattr(runner, "run")
+        assert hasattr(runner, "popen")
+
+    def test_subprocess_runner_has_run_method(self):
+        runner = SubprocessRunner()
+        assert callable(runner.run)
+
+    def test_subprocess_runner_has_popen_method(self):
+        runner = SubprocessRunner()
+        assert callable(runner.popen)
+
+    def test_subprocess_runner_run_returns_completed_process(self):
+        """run() with a harmless command returns a CompletedProcess."""
+        import subprocess
+        runner = SubprocessRunner()
+        result = runner.run(["echo", "hello"], capture_output=True, text=True)
+        assert isinstance(result, subprocess.CompletedProcess)
+        assert result.returncode == 0
+        assert "hello" in result.stdout
+
+    def test_subprocess_runner_run_raises_on_missing_command(self):
+        """run() raises FileNotFoundError for nonexistent commands."""
+        runner = SubprocessRunner()
+        with pytest.raises(FileNotFoundError):
+            runner.run(["__nonexistent_cmd_12345__"])
+
+    def test_custom_runner_satisfies_protocol(self):
+        """A plain class with run/popen methods satisfies CommandRunner."""
+        import subprocess
+
+        class FakeRunner:
+            def run(self, cmd, **kwargs):
+                return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+            def popen(self, cmd, **kwargs):
+                raise NotImplementedError
+
+        fake: CommandRunner = FakeRunner()
+        result = fake.run(["test"])
+        assert result.returncode == 0
