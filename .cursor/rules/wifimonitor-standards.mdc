@@ -1,0 +1,34 @@
+---
+description: Wifimonitor coding standards — TDD, SOLID, type hints, commits
+alwaysApply: true
+---
+
+# Wifimonitor — Coding Standards
+
+## Methodology
+
+- Software Craftsmanship: TDD, SOLID, clean code
+- Test-first: no production code without a failing test first
+- Coverage: 90%+ overall; 100% on pure functions (parsers, helpers)
+
+## Code Quality
+
+- Type hints required on all public interfaces
+- Docstrings: Google style on public classes and functions
+- Python 3.9+ (enforced at runtime)
+
+## Version Control
+
+- Conventional commits: `feat:`, `fix:`, `test:`, `refactor:`, `chore:`
+- Feature branches off `main`; PRs required — no direct pushes to main
+
+## Agent Roles
+
+| Agent | Use When |
+|-------|----------|
+| Architect | Research approaches, define APIs/modules |
+| TDD | Writing production or test code |
+| DevSecOps | Security review, dependency audit, CI/CD |
+| Red Team | Adversarial review before merge |
+| Scrum Master | Backlog grooming, prioritization, retros |
+| Manager | Orchestrate all agents end-to-end |

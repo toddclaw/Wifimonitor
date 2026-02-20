@@ -1,0 +1,52 @@
+---
+description: Wifimonitor project overview, structure, domain knowledge, and test commands
+alwaysApply: true
+---
+
+# Wifimonitor — Project Overview
+
+## What It Is
+
+A Python WiFi monitoring tool. Targets **Acer Nitro 5 laptop** with `nmcli`. Raspberry Pi (airodump-ng, monitor mode) planned.
+
+## File Structure
+
+```
+Wifimonitor/
+├── wifi_monitor_nitro5.py     # Laptop entry point (Rich TUI, nmcli)
+├── wifi_common.py             # Shared: Network dataclass, signal/color helpers, airodump CSV parser
+├── pyproject.toml             # Tool config (ruff, mypy)
+├── requirements.txt           # Pi requirements
+├── requirements-laptop.txt    # Laptop (rich>=13.0,<15)
+├── requirements-dev.txt       # Dev/CI (pytest, ruff, mypy, pip-audit)
+├── .github/workflows/ci.yml   # CI (test, lint, security)
+└── tests/
+```
+
+## Target Architecture (evolving)
+
+```
+src/wifimonitor/
+├── domain/network.py
+├── scanning/scanner_protocol.py, nmcli_scanner.py, airodump_scanner.py
+├── display/renderer_protocol.py, rich_renderer.py
+└── helpers/signal.py
+```
+
+## Domain Knowledge
+
+- **BSSID**: MAC of access point (lowercase)
+- **SSID**: Network name (empty for hidden)
+- **Signal**: dBm — higher better (-50 excellent, -80 poor). `dBm = (pct // 2) - 100`
+- **Bars**: 0–4 from `signal_to_bars()`
+- **Security**: "Open", "WEP", "WPA", "WPA2", "WPA3"
+
+## Commands
+
+```bash
+pytest tests/ -v
+pytest tests/ -v --cov=. --cov-report=term-missing
+ruff check wifi_common.py wifi_monitor_nitro5.py tests/
+mypy wifi_common.py wifi_monitor_nitro5.py
+pip-audit -r requirements-laptop.txt
+```
