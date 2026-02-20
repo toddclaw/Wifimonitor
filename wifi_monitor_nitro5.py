@@ -27,7 +27,9 @@ import argparse
 import atexit
 import collections
 import csv
+import io
 import glob
+import logging
 import os
 import re
 import signal
@@ -49,8 +51,11 @@ from wifi_common import (
 
 # -- Defaults --
 SCAN_INTERVAL = 10  # seconds between refreshes
+_LOGGER = logging.getLogger("wifi_monitor_nitro5")
 AIRODUMP_PREFIX = "/tmp/wifi_monitor_nitro5"
+AIRODUMP_STDERR_LOG = "/tmp/wifi_monitor_nitro5_airodump.log"
 AIRODUMP_WRITE_INTERVAL = 5
+AIRODUMP_STARTUP_WAIT = 2  # seconds to wait before checking if process is still alive
 _DEFAULT_RUNNER = SubprocessRunner()
 
 
@@ -269,13 +274,34 @@ class DnsTracker:
 # Monitor mode + airodump-ng (client count per BSSID)
 # ---------------------------------------------------------------------------
 
+def _set_nm_managed(interface: str, managed: bool, runner: CommandRunner | None = None) -> None:
+    """Tell NetworkManager to manage or unmanage the interface.
+
+    Prevents NetworkManager from reclaiming the interface during monitor mode.
+    Ignores failures (e.g. nmcli not installed).
+    """
+    runner = runner or _DEFAULT_RUNNER
+    env = _minimal_env()
+    try:
+        runner.run(
+            ["nmcli", "device", "set", interface, "managed", "yes" if managed else "no"],
+            capture_output=True,
+            timeout=5,
+            env=env,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
+
+
 def _enable_monitor_mode(interface: str, runner: CommandRunner | None = None) -> bool:
     """Put a WiFi interface into monitor mode using iw.
 
+    Asks NetworkManager to unmanage the interface first so it does not reclaim it.
     Returns True if successful, False otherwise.
     """
     runner = runner or _DEFAULT_RUNNER
     env = _minimal_env()
+    _set_nm_managed(interface, False, runner)
     cmds = [
         ["sudo", "ip", "link", "set", interface, "down"],
         ["sudo", "iw", "dev", interface, "set", "type", "monitor"],
@@ -292,7 +318,7 @@ def _enable_monitor_mode(interface: str, runner: CommandRunner | None = None) ->
 
 
 def _disable_monitor_mode(interface: str, runner: CommandRunner | None = None) -> None:
-    """Restore a WiFi interface to managed mode."""
+    """Restore a WiFi interface to managed mode and give it back to NetworkManager."""
     runner = runner or _DEFAULT_RUNNER
     env = _minimal_env()
     cmds = [
@@ -305,6 +331,7 @@ def _disable_monitor_mode(interface: str, runner: CommandRunner | None = None) -
             runner.run(cmd, capture_output=True, timeout=10, env=env)
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
             pass
+    _set_nm_managed(interface, True, runner)
 
 
 class AirodumpScanner:
@@ -319,12 +346,16 @@ class AirodumpScanner:
         interface: str,
         prefix: str = AIRODUMP_PREFIX,
         runner: CommandRunner | None = None,
+        *,
+        debug: bool = False,
     ) -> None:
         self.interface = interface
         self.prefix = prefix
         self._runner = runner or _DEFAULT_RUNNER
         self._proc: subprocess.Popen[bytes] | None = None
         self._monitor_enabled = False
+        self._debug = debug
+        self._stderr_file: io.TextIOWrapper | None = None
 
     def start(self) -> bool:
         """Enable monitor mode and start airodump-ng. Returns True if successful."""
@@ -333,21 +364,50 @@ class AirodumpScanner:
         self._monitor_enabled = True
         self._cleanup_old_files()
         env = _minimal_env()
+        if os.geteuid() == 0:
+            airodump_cmd: tuple[str, ...] = ("airodump-ng",)
+        else:
+            airodump_cmd = ("sudo", "airodump-ng")
+        cmd = [
+            *airodump_cmd,
+            self.interface,
+            "--band", "abg",
+            "--write", self.prefix,
+            "--output-format", "csv",
+            "--write-interval", str(AIRODUMP_WRITE_INTERVAL),
+            "--background", "1",
+        ]
+        stderr_dest: int | io.TextIOWrapper = subprocess.DEVNULL
+        if self._debug:
+            try:
+                self._stderr_file = open(AIRODUMP_STDERR_LOG, "w", encoding="utf-8")
+                stderr_dest = self._stderr_file
+                _LOGGER.debug(
+                    "airodump stderr -> %s | cwd=/tmp | prefix=%s",
+                    AIRODUMP_STDERR_LOG,
+                    self.prefix,
+                )
+            except OSError:
+                pass
         try:
             self._proc = self._runner.popen(
-                [
-                    "sudo", "airodump-ng",
-                    self.interface,
-                    "--band", "abg",
-                    "--write", self.prefix,
-                    "--output-format", "csv",
-                    "--write-interval", str(AIRODUMP_WRITE_INTERVAL),
-                ],
+                cmd,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stderr=stderr_dest,
                 env=env,
+                cwd="/tmp",
+                text=False,
             )
         except (FileNotFoundError, OSError):
+            self.stop()
+            return False
+        time.sleep(AIRODUMP_STARTUP_WAIT)
+        if self._proc.poll() is not None:
+            _LOGGER.debug(
+                "airodump exited with code %s (see %s)",
+                self._proc.returncode,
+                AIRODUMP_STDERR_LOG if self._debug else "stderr",
+            )
             self.stop()
             return False
         return True
@@ -361,6 +421,12 @@ class AirodumpScanner:
             except subprocess.TimeoutExpired:
                 self._proc.kill()
             self._proc = None
+        if self._stderr_file is not None:
+            try:
+                self._stderr_file.close()
+            except OSError:
+                pass
+            self._stderr_file = None
         if self._monitor_enabled:
             _disable_monitor_mode(self.interface, self._runner)
             self._monitor_enabled = False
@@ -370,13 +436,26 @@ class AirodumpScanner:
         """Read the latest airodump-ng CSV and return networks with client counts."""
         csv_path = self._latest_csv()
         if not csv_path:
+            if self._debug:
+                _LOGGER.debug("no CSV file found (glob %s-*.csv)", self.prefix)
             return []
         try:
             with open(csv_path, encoding="utf-8", errors="replace") as f:
                 content = f.read()
         except OSError:
             return []
-        networks, _ = parse_airodump_csv(content)
+        networks, client_counts = parse_airodump_csv(content)
+        if self._debug:
+            normalized = content.replace("\r\n", "\n").replace("\r", "\n")
+            sections = normalized.split("\n\n")
+            total_clients = sum(client_counts.values())
+            _LOGGER.debug(
+                "CSV %s (%d bytes) | sections: %d | clients: %d",
+                csv_path,
+                len(content),
+                len(sections),
+                total_clients,
+            )
         return networks
 
     def _latest_csv(self) -> str | None:
@@ -649,6 +728,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="use monitor mode with airodump-ng to detect client counts per BSSID (requires root, compatible WiFi)",
     )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="enable debug logging for troubleshooting (e.g. client counts in monitor mode)",
+    )
     return parser.parse_args(argv)
 
 
@@ -659,6 +743,14 @@ def main() -> None:
     clean when the user exits.
     """
     args = _parse_args()
+    if args.debug:
+        logging.basicConfig(
+            level=logging.DEBUG,
+            format="%(name)s: %(levelname)s: %(message)s",
+            stream=sys.stderr,
+        )
+        logging.getLogger("wifi_common").setLevel(logging.DEBUG)
+        logging.getLogger("wifi_monitor_nitro5").setLevel(logging.DEBUG)
     console = Console()
     credentials: dict[str, str] | None = None
     connected = False
@@ -667,7 +759,9 @@ def main() -> None:
 
     if args.monitor:
         monitor_interface = args.interface or "wlan0"
-        airodump_scanner = AirodumpScanner(interface=monitor_interface)
+        airodump_scanner = AirodumpScanner(
+            interface=monitor_interface, debug=args.debug
+        )
         if airodump_scanner.start():
             atexit.register(airodump_scanner.stop)
             console.print(

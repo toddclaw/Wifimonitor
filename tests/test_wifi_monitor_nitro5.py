@@ -1048,6 +1048,41 @@ class TestAirodumpScanner:
             networks = scanner.scan()
         assert networks == []
 
+    def test_start_passes_cwd_and_background_to_airodump(self):
+        """start() spawns airodump with cwd=/tmp and --background 1."""
+        fake = _FakeRunner()
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        fake.set_popen_result(mock_proc)
+        scanner = AirodumpScanner(interface="wlan0", runner=fake)
+        with (
+            patch("wifi_monitor_nitro5.os.geteuid", return_value=0),
+            patch("wifi_monitor_nitro5.time.sleep"),
+        ):
+            ok = scanner.start()
+        assert ok is True
+        assert len(fake.popen_calls) == 1
+        cmd, kwargs = fake.popen_calls[0]
+        assert kwargs.get("cwd") == "/tmp"
+        assert "--background" in cmd
+        idx = cmd.index("--background")
+        assert cmd[idx + 1] == "1"
+        scanner.stop()
+
+    def test_start_returns_false_when_airodump_exits_immediately(self):
+        """start() returns False when airodump process exits right after spawn."""
+        fake = _FakeRunner()
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 1
+        fake.set_popen_result(mock_proc)
+        scanner = AirodumpScanner(interface="wlan0", runner=fake)
+        with (
+            patch("wifi_monitor_nitro5.os.geteuid", return_value=0),
+            patch("wifi_monitor_nitro5.time.sleep"),
+        ):
+            ok = scanner.start()
+        assert ok is False
+
 
 # ---------------------------------------------------------------------------
 # MIN_PYTHON — version enforcement

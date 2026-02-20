@@ -111,6 +111,7 @@ sudo python wifi_monitor_nitro5.py --monitor -i wlan1
 - No passphrase is required; client counts are derived from passive monitoring of management frames.
 - If monitor mode cannot be enabled (missing tools, unsupported hardware, or permission denied), the tool falls back to nmcli scanning with client counts shown as 0.
 - When using `--monitor` with `--connect`, nmcli will use a different interface for connecting (the monitor interface cannot connect while in monitor mode).
+- Use `--debug` to troubleshoot: it enables verbose logging and captures airodump-ng stderr to `/tmp/wifi_monitor_nitro5_airodump.log` when CSV files are missing.
 
 ## Display Columns
 

@@ -7,7 +7,7 @@ import logging
 import re
 import subprocess
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, IO, Protocol
 
 logger = logging.getLogger(__name__)
 
@@ -81,9 +81,10 @@ class CommandRunner(Protocol):
         cmd: list[str],
         *,
         stdout: int | None = None,
-        stderr: int | None = None,
+        stderr: int | None | IO[Any] = None,
         text: bool = True,
         env: dict[str, str] | None = None,
+        cwd: str | None = None,
     ) -> subprocess.Popen[Any]:
         """Launch *cmd* asynchronously and return a Popen handle."""
         ...  # pragma: no cover
@@ -115,9 +116,10 @@ class SubprocessRunner:
         cmd: list[str],
         *,
         stdout: int | None = None,
-        stderr: int | None = None,
+        stderr: int | None | IO[Any] = None,
         text: bool = True,
         env: dict[str, str] | None = None,
+        cwd: str | None = None,
     ) -> subprocess.Popen[Any]:
         """Launch *cmd* via ``subprocess.Popen``."""
         return subprocess.Popen(
@@ -126,6 +128,7 @@ class SubprocessRunner:
             stderr=stderr,
             text=text,
             env=env,
+            cwd=cwd,
         )
 
 
@@ -214,7 +217,12 @@ def parse_airodump_csv(content: str) -> tuple[list[Network], dict[str, int]]:
     if not content.strip():
         return networks, client_counts
 
-    sections = content.split("\r\n\r\n")
+    # Normalize line endings so we handle both \r\n\r\n and \n\n section separators
+    # (airodump-ng on Linux typically uses \n)
+    normalized = content.replace("\r\n", "\n").replace("\r", "\n")
+    sections = normalized.split("\n\n")
+
+    logger.debug("airodump CSV sections: %d", len(sections))
 
     # -- AP section --
     ap_lines = sections[0].strip().splitlines()
@@ -261,6 +269,7 @@ def parse_airodump_csv(content: str) -> tuple[list[Network], dict[str, int]]:
     # -- Station section --
     if len(sections) > 1:
         sta_lines = sections[1].strip().splitlines()
+        logger.debug("airodump CSV station section found, %d lines", len(sta_lines))
         if sta_lines:
             reader = csv.reader(sta_lines)
             header = None
@@ -280,6 +289,10 @@ def parse_airodump_csv(content: str) -> tuple[list[Network], dict[str, int]]:
                 if not bssid or "not associated" in bssid:
                     continue
                 client_counts[bssid] = client_counts.get(bssid, 0) + 1
+
+        logger.debug("airodump CSV clients: %d BSSIDs, %d total", len(client_counts), sum(client_counts.values()))
+    else:
+        logger.debug("airodump CSV no station section (sections=%d)", len(sections))
 
     # Merge client counts into Network objects
     for net in networks:

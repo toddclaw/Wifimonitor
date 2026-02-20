@@ -177,6 +177,33 @@ SAMPLE_AIRODUMP_CSV = (
     " -80, 10, (not associated), \r\n"
 )
 
+# Same content as SAMPLE_AIRODUMP_CSV but with \n only (no \r) — Linux airodump-ng style
+SAMPLE_AIRODUMP_CSV_NN = (
+    "BSSID, First time seen, Last time seen, channel, Speed,"
+    " Privacy, Cipher, Authentication, Power, # beacons, # IV,"
+    " LAN IP, ID-length, ESSID, Key\n"
+    "AA:BB:CC:DD:EE:01, 2025-01-01 00:00:00, 2025-01-01 00:01:00,"
+    "  6, 54, WPA2 CCMP PSK,CCMP,PSK, -55, 100, 0,"
+    "  0.  0.  0.  0, 10, HomeNetwork,\n"
+    "AA:BB:CC:DD:EE:02, 2025-01-01 00:00:00, 2025-01-01 00:01:00,"
+    " 11, 54, OPN,,, -72, 50, 0,"
+    "  0.  0.  0.  0,  8, CoffeeShop,\n"
+    "AA:BB:CC:DD:EE:03, 2025-01-01 00:00:00, 2025-01-01 00:01:00,"
+    "  1, 54, WPA2 CCMP PSK,CCMP,PSK, -1, 10, 0,"
+    "  0.  0.  0.  0,  0, ,\n"
+    "\n"
+    "Station MAC, First time seen, Last time seen, Power, # packets,"
+    " BSSID, Probed ESSIDs\n"
+    "11:22:33:44:55:01, 2025-01-01 00:00:00, 2025-01-01 00:01:00,"
+    " -60, 100, AA:BB:CC:DD:EE:01, HomeNetwork\n"
+    "11:22:33:44:55:02, 2025-01-01 00:00:00, 2025-01-01 00:01:00,"
+    " -65, 50, AA:BB:CC:DD:EE:01, HomeNetwork\n"
+    "11:22:33:44:55:03, 2025-01-01 00:00:00, 2025-01-01 00:01:00,"
+    " -70, 30, AA:BB:CC:DD:EE:02, CoffeeShop\n"
+    "11:22:33:44:55:04, 2025-01-01 00:00:00, 2025-01-01 00:01:00,"
+    " -80, 10, (not associated), \n"
+)
+
 
 class TestParseAirodumpCsv:
     def test_parses_networks(self):
@@ -233,6 +260,15 @@ class TestParseAirodumpCsv:
         networks, client_counts = parse_airodump_csv(header_only)
         assert networks == []
         assert client_counts == {}
+
+    def test_client_counts_with_nn_line_endings(self):
+        """CSV with \\n\\n section separator (Linux airodump-ng) yields correct client counts."""
+        networks, client_counts = parse_airodump_csv(SAMPLE_AIRODUMP_CSV_NN)
+        home = [n for n in networks if n.ssid == "HomeNetwork"][0]
+        coffee = [n for n in networks if n.ssid == "CoffeeShop"][0]
+        assert home.clients == 2
+        assert coffee.clients == 1
+        assert sum(client_counts.values()) == 3
 
 
 # ---------------------------------------------------------------------------
