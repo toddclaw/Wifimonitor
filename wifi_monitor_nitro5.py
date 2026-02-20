@@ -28,6 +28,7 @@ import atexit
 import collections
 import csv
 import io
+from datetime import datetime
 import glob
 import logging
 import os
@@ -55,6 +56,7 @@ _LOGGER = logging.getLogger("wifi_monitor_nitro5")
 AIRODUMP_PREFIX = "/tmp/wifi_monitor_nitro5"
 AIRODUMP_STDERR_LOG = "/tmp/wifi_monitor_nitro5_airodump.log"
 AIRODUMP_MONITOR_LOG = "/tmp/wifi_monitor_nitro5_monitor.log"
+AIRODUMP_DEBUG_LOG = "/tmp/wifi_monitor_nitro5_debug.log"
 AIRODUMP_WRITE_INTERVAL = 5
 AIRODUMP_STARTUP_WAIT = 6  # wait for first CSV write (airodump --write-interval is 5s)
 _DEFAULT_RUNNER = SubprocessRunner()
@@ -629,7 +631,16 @@ class AirodumpScanner:
             "airodump_exit" if airodump exited immediately, or "airodump_spawn"
             if airodump could not be started (FileNotFoundError, etc.).
         """
-        if not _interface_supports_monitor(self.interface, self._runner):
+        supports_monitor = _interface_supports_monitor(
+            self.interface, self._runner
+        )
+        if self._debug:
+            _LOGGER.debug(
+                "_interface_supports_monitor(%s)=%s",
+                self.interface,
+                supports_monitor,
+            )
+        if not supports_monitor:
             return False, "monitor_unsupported"
         try:
             self._runner.run(
@@ -645,12 +656,27 @@ class AirodumpScanner:
             self._monitor_interface = mon_iface
             self._monitor_is_virtual = True
             self._monitor_enabled = True
+            if self._debug:
+                _LOGGER.debug(
+                    "virtual monitor: success monitor_interface=%s",
+                    self._monitor_interface,
+                )
         else:
+            if self._debug:
+                _LOGGER.debug(
+                    "virtual monitor: failed, trying direct monitor on %s",
+                    self.interface,
+                )
             if not _enable_monitor_mode(self.interface, self._runner):
                 return False, "monitor_mode"
             self._monitor_interface = self.interface
             self._monitor_is_virtual = False
             self._monitor_enabled = True
+            if self._debug:
+                _LOGGER.debug(
+                    "direct monitor: success monitor_interface=%s",
+                    self._monitor_interface,
+                )
         self._cleanup_old_files()
         env = _minimal_env()
         if os.geteuid() == 0:
@@ -669,6 +695,12 @@ class AirodumpScanner:
         stderr_dest: int | io.TextIOWrapper = subprocess.DEVNULL
         try:
             self._stderr_file = open(AIRODUMP_STDERR_LOG, "w", encoding="utf-8")
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            self._stderr_file.write(
+                f"[{ts}] wifi_monitor_nitro5: capturing airodump-ng stderr\n"
+            )
+            self._stderr_file.write(f"[command] {' '.join(cmd)}\n")
+            self._stderr_file.flush()
             stderr_dest = self._stderr_file
             if self._debug:
                 _LOGGER.debug(
@@ -676,6 +708,7 @@ class AirodumpScanner:
                     AIRODUMP_STDERR_LOG,
                     self.prefix,
                 )
+                _LOGGER.debug("airodump command: %s", " ".join(cmd))
         except OSError:
             pass
         self._last_cmd = cmd
@@ -741,28 +774,60 @@ class AirodumpScanner:
 
     def scan(self) -> list[Network]:
         """Read the latest airodump-ng CSV and return networks with client counts."""
+        glob_pattern = f"{self.prefix}-*.csv"
+        files = sorted(glob.glob(glob_pattern))
         csv_path = self._latest_csv()
+
+        if self._debug:
+            _LOGGER.debug(
+                "scan glob pattern=%s files=%s",
+                glob_pattern,
+                files if files else "none",
+            )
+            _LOGGER.debug(
+                "scan selected_csv=%s",
+                csv_path if csv_path else "none - no CSV",
+            )
+
         if not csv_path:
-            if self._debug:
-                _LOGGER.debug("no CSV file found (glob %s-*.csv)", self.prefix)
             return []
+
         try:
             with open(csv_path, encoding="utf-8", errors="replace") as f:
                 content = f.read()
         except OSError:
+            if self._debug:
+                _LOGGER.debug("scan failed to read %s", csv_path)
             return []
+
         networks, client_counts = parse_airodump_csv(content)
+        total_clients = sum(client_counts.values())
+
         if self._debug:
-            normalized = content.replace("\r\n", "\n").replace("\r", "\n")
-            sections = normalized.split("\n\n")
-            total_clients = sum(client_counts.values())
             _LOGGER.debug(
-                "CSV %s (%d bytes) | sections: %d | clients: %d",
-                csv_path,
+                "scan parse: csv_size=%d bytes networks=%d clients_total=%d client_counts=%s",
                 len(content),
-                len(sections),
+                len(networks),
                 total_clients,
+                dict(client_counts),
             )
+            for i, net in enumerate(networks[:10]):
+                ssid_display = net.ssid if net.ssid else "<hidden>"
+                _LOGGER.debug(
+                    "scan network[%d]: bssid=%s ssid=%s ch=%s signal=%s clients=%s",
+                    i,
+                    net.bssid,
+                    ssid_display,
+                    net.channel,
+                    net.signal,
+                    net.clients,
+                )
+            if len(networks) > 10:
+                _LOGGER.debug(
+                    "scan ... and %d more networks (truncated)",
+                    len(networks) - 10,
+                )
+
         return networks
 
     def _latest_csv(self) -> str | None:
@@ -1046,6 +1111,57 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _dump_startup_config(
+    *,
+    args: argparse.Namespace,
+    monitor_interface: str | None,
+    airodump_ok: bool,
+    airodump_failure: str | None,
+    dns_ok: bool | None,
+    creds_count: int,
+) -> None:
+    """Log startup configuration to debug log (call only when --debug)."""
+    _LOGGER.debug(
+        "CLI: interface=%s monitor=%s dns=%s credentials=%s connect=%s debug=%s",
+        args.interface,
+        args.monitor,
+        args.dns,
+        args.credentials,
+        args.connect,
+        args.debug,
+    )
+    _LOGGER.debug(
+        "monitor_interface=%s",
+        monitor_interface,
+    )
+    _LOGGER.debug(
+        "settings: SCAN_INTERVAL=%s AIRODUMP_WRITE_INTERVAL=%s AIRODUMP_STARTUP_WAIT=%s",
+        SCAN_INTERVAL,
+        AIRODUMP_WRITE_INTERVAL,
+        AIRODUMP_STARTUP_WAIT,
+    )
+    _LOGGER.debug(
+        "paths: prefix=%s stderr_log=%s monitor_log=%s debug_log=%s",
+        AIRODUMP_PREFIX,
+        AIRODUMP_STDERR_LOG,
+        AIRODUMP_MONITOR_LOG,
+        AIRODUMP_DEBUG_LOG,
+    )
+    _LOGGER.debug(
+        "monitor_mode: enabled=%s ok=%s failure=%s",
+        args.monitor,
+        airodump_ok,
+        airodump_failure,
+    )
+    _LOGGER.debug(
+        "dns_capture: enabled=%s started=%s",
+        args.dns,
+        dns_ok,
+    )
+    _LOGGER.debug("credentials: loaded=%s", creds_count)
+    _LOGGER.debug("auto_connect: enabled=%s", args.connect)
+
+
 def main() -> None:
     """Run the WiFi monitor TUI loop.
 
@@ -1054,18 +1170,29 @@ def main() -> None:
     """
     args = _parse_args()
     if args.debug:
+        log_format = "%(name)s: %(levelname)s: %(message)s"
         logging.basicConfig(
             level=logging.DEBUG,
-            format="%(name)s: %(levelname)s: %(message)s",
+            format=log_format,
             stream=sys.stderr,
         )
         logging.getLogger("wifi_common").setLevel(logging.DEBUG)
         logging.getLogger("wifi_monitor_nitro5").setLevel(logging.DEBUG)
+        try:
+            file_handler = logging.FileHandler(
+                AIRODUMP_DEBUG_LOG, mode="a", encoding="utf-8"
+            )
+            file_handler.setLevel(logging.DEBUG)
+            file_handler.setFormatter(logging.Formatter(log_format))
+            logging.getLogger().addHandler(file_handler)
+        except OSError:
+            pass  # Debug log file optional; stderr still works
     console = Console()
     credentials: dict[str, str] | None = None
     connected = False
     dns_tracker: DnsTracker | None = None
     airodump_scanner: AirodumpScanner | None = None
+    airodump_failure_reason: str | None = None
 
     if args.monitor:
         monitor_interface = args.interface or "wlan0"
@@ -1092,6 +1219,7 @@ def main() -> None:
                 "[bold cyan]WiFi Monitor[/bold cyan] — "
                 f"[yellow]{msg} — falling back to nmcli[/yellow]"
             )
+            airodump_failure_reason = failure_reason
             airodump_scanner = None
 
     if args.credentials:
@@ -1120,6 +1248,16 @@ def main() -> None:
                 "[yellow]DNS capture failed (tcpdump not found or no permission)[/yellow]"
             )
             dns_tracker = None
+
+    if args.debug:
+        _dump_startup_config(
+            args=args,
+            monitor_interface=args.interface or "wlan0" if args.monitor else None,
+            airodump_ok=airodump_scanner is not None,
+            airodump_failure=airodump_failure_reason,
+            dns_ok=dns_tracker is not None if args.dns else None,
+            creds_count=len(credentials) if credentials else 0,
+        )
 
     console.print("[bold cyan]WiFi Monitor[/bold cyan] — Acer Nitro 5")
     if airodump_scanner:

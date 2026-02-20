@@ -112,7 +112,7 @@ sudo python wifi_monitor_nitro5.py --monitor -i wlan1
 - If monitor mode cannot be enabled (missing tools, unsupported hardware, or permission denied), the tool falls back to nmcli scanning with client counts shown as 0.
 - When using `--monitor` with `--connect`, nmcli will use a different interface for connecting (the monitor interface cannot connect while in monitor mode).
 - The first scan may take up to 10 seconds; airodump-ng writes CSV every 5 seconds.
-- airodump-ng stderr is always captured to `/tmp/wifi_monitor_nitro5_airodump.log` for troubleshooting. Use `--debug` for additional verbose logging.
+- airodump-ng stderr is always captured to `/tmp/wifi_monitor_nitro5_airodump.log` (includes a header with the command). Use `--debug` to write Python debug output to `/tmp/wifi_monitor_nitro5_debug.log` (settings, features, monitor setup, per-scan parse details).
 
 **Hardware note:** Many laptop WiFi chips (including some Intel adapters) do **not** support monitor mode or do so poorly. For reliable client counting, use a USB WiFi adapter that supports monitor mode (e.g. Atheros AR9271, Ralink RT3070).
 
@@ -184,15 +184,16 @@ The codebase has been reviewed by DevSecOps and Red Team agents:
 
 If monitor mode shows "client counts enabled" but no networks or client counts appear:
 
-1. **Check the log file** — Inspect `/tmp/wifi_monitor_nitro5_airodump.log` for airodump-ng errors. If airodump exits immediately, the log will show the exit code and command used.
-2. **Check monitor mode setup** — Inspect `/tmp/wifi_monitor_nitro5_monitor.log` for failures during `ip`/`iw` commands (e.g. "device does not support monitor mode").
-3. **Interface stays managed** — If the log shows "Interface X is not type monitor", NetworkManager may be reclaiming the interface or the driver may not actually support monitor mode. Options:
+1. **Run with `--debug`** — Use `sudo python wifi_monitor_nitro5.py --monitor -i wlp4s0 --debug` to enable verbose logging. Python debug output is written to `/tmp/wifi_monitor_nitro5_debug.log` (settings, feature flags, monitor setup, per-scan parse results).
+2. **Check the airodump log** — Inspect `/tmp/wifi_monitor_nitro5_airodump.log` for airodump-ng stderr. The file is pre-populated with a header and the command used. If airodump exits immediately, the log will show the exit code.
+3. **Check monitor mode setup** — Inspect `/tmp/wifi_monitor_nitro5_monitor.log` for failures during `ip`/`iw` commands (e.g. "device does not support monitor mode").
+4. **Interface stays managed** — If the log shows "Interface X is not type monitor", NetworkManager may be reclaiming the interface or the driver may not actually support monitor mode. Options:
    - **Permanent unmanage:** Add `unmanaged-devices=interface-name:IFACE` to `/etc/NetworkManager/conf.d/monitor.conf` (create the file if needed), then reboot.
    - **Driver limitation:** Intel laptop WiFi often reports success but does not support monitor mode. Try a USB adapter (Atheros AR9271, Ralink RT3070).
-4. **rfkill soft-block** — If WiFi is soft-blocked (`rfkill list` shows "Soft blocked: yes"), run `rfkill unblock wifi` before starting. The monitor attempts this automatically but it may fail without root.
-5. **Verify interface type** — Run `iw dev <interface> info` and ensure `type monitor` is shown. Some drivers report success for `iw ... set type monitor` but do not actually support packet capture.
-6. **Ensure aircrack-ng is installed** — `sudo apt install aircrack-ng` (or equivalent). airodump-ng must be on your PATH.
-7. **Try a USB WiFi adapter** — Built-in laptop WiFi often lacks monitor mode support. USB adapters with Atheros AR9271 or Ralink RT3070 chips are known to work.
+5. **rfkill soft-block** — If WiFi is soft-blocked (`rfkill list` shows "Soft blocked: yes"), run `rfkill unblock wifi` before starting. The monitor attempts this automatically but it may fail without root.
+6. **Verify interface type** — Run `iw dev <interface> info` and ensure `type monitor` is shown. Some drivers report success for `iw ... set type monitor` but do not actually support packet capture.
+7. **Ensure aircrack-ng is installed** — `sudo apt install aircrack-ng` (or equivalent). airodump-ng must be on your PATH.
+8. **Try a USB WiFi adapter** — Built-in laptop WiFi often lacks monitor mode support. USB adapters with Atheros AR9271 or Ralink RT3070 chips are known to work.
 
 ## Future Plans
 

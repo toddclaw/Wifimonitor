@@ -226,6 +226,11 @@ def parse_airodump_csv(content: str) -> tuple[list[Network], dict[str, int]]:
 
     # -- AP section --
     ap_lines = sections[0].strip().splitlines()
+    logger.debug(
+        "airodump CSV section line counts: AP=%d Station=%d",
+        len(ap_lines),
+        len(sections[1].strip().splitlines()) if len(sections) > 1 else 0,
+    )
     if ap_lines:
         reader = csv.reader(ap_lines)
         header = None
@@ -265,6 +270,12 @@ def parse_airodump_csv(content: str) -> tuple[list[Network], dict[str, int]]:
                 channel=channel,
                 security=map_airodump_privacy(privacy),
             ))
+
+    if networks:
+        first_aps = [
+            (n.bssid, n.ssid or "<hidden>") for n in networks[:3]
+        ]
+        logger.debug("airodump CSV first APs parsed: %s", first_aps)
 
     # -- Station section --
     if len(sections) > 1:
