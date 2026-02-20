@@ -1,7 +1,15 @@
 """Shared data structures and helpers for WiFi Monitor variants."""
 
+from __future__ import annotations
+
 import csv
-from dataclasses import dataclass, field
+import logging
+import re
+import subprocess
+from dataclasses import dataclass
+from typing import Any, Protocol
+
+logger = logging.getLogger(__name__)
 
 # -- Colors (RGB tuples for PiTFT; also used as constants by Rich TUI) --
 BLACK = (0, 0, 0)
@@ -13,6 +21,20 @@ CYAN = (0, 255, 255)
 GRAY = (128, 128, 128)
 DIM = (40, 40, 40)
 ORANGE = (255, 165, 0)
+
+# Canonical mapping from RGB tuple to Rich color name.
+# Kept alongside the RGB constants so they cannot drift apart.
+COLOR_TO_RICH: dict[tuple, str] = {
+    BLACK: "black",
+    WHITE: "white",
+    GREEN: "green",
+    YELLOW: "yellow",
+    RED: "red",
+    CYAN: "cyan",
+    GRAY: "grey50",
+    DIM: "grey15",
+    ORANGE: "dark_orange",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -29,6 +51,82 @@ class Network:
     channel: int = 0
     security: str = "Open"
     clients: int = 0
+
+
+# ---------------------------------------------------------------------------
+# Command runner protocol (subprocess injection seam)
+# ---------------------------------------------------------------------------
+
+class CommandRunner(Protocol):
+    """Protocol for running external commands.
+
+    Provides an injection seam so callers can substitute a fake runner in
+    tests instead of patching ``subprocess`` globally.
+    """
+
+    def run(
+        self,
+        cmd: list[str],
+        *,
+        capture_output: bool = True,
+        text: bool = True,
+        timeout: int | None = None,
+        env: dict[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[Any]:
+        """Run *cmd* and return a CompletedProcess."""
+        ...  # pragma: no cover
+
+    def popen(
+        self,
+        cmd: list[str],
+        *,
+        stdout: int | None = None,
+        stderr: int | None = None,
+        text: bool = True,
+        env: dict[str, str] | None = None,
+    ) -> subprocess.Popen[Any]:
+        """Launch *cmd* asynchronously and return a Popen handle."""
+        ...  # pragma: no cover
+
+
+class SubprocessRunner:
+    """Default CommandRunner that delegates to the real ``subprocess`` module."""
+
+    def run(
+        self,
+        cmd: list[str],
+        *,
+        capture_output: bool = True,
+        text: bool = True,
+        timeout: int | None = None,
+        env: dict[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[Any]:
+        """Run *cmd* via ``subprocess.run``."""
+        return subprocess.run(
+            cmd,
+            capture_output=capture_output,
+            text=text,
+            timeout=timeout,
+            env=env,
+        )
+
+    def popen(
+        self,
+        cmd: list[str],
+        *,
+        stdout: int | None = None,
+        stderr: int | None = None,
+        text: bool = True,
+        env: dict[str, str] | None = None,
+    ) -> subprocess.Popen[Any]:
+        """Launch *cmd* via ``subprocess.Popen``."""
+        return subprocess.Popen(
+            cmd,
+            stdout=stdout,
+            stderr=stderr,
+            text=text,
+            env=env,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -64,6 +162,23 @@ def security_color(security: str) -> tuple:
     if security == "WEP":
         return YELLOW
     return GREEN
+
+
+# ---------------------------------------------------------------------------
+# Input validation
+# ---------------------------------------------------------------------------
+
+_BSSID_RE = re.compile(r"^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$")
+
+
+def is_valid_bssid(bssid: str) -> bool:
+    """Return True if *bssid* is a valid MAC address (colon-separated hex)."""
+    return bool(_BSSID_RE.match(bssid))
+
+
+def is_valid_channel(channel: int) -> bool:
+    """Return True if *channel* is in the valid WiFi range (1-196)."""
+    return 1 <= channel <= 196
 
 
 # ---------------------------------------------------------------------------
@@ -114,6 +229,8 @@ def parse_airodump_csv(content: str) -> tuple[list[Network], dict[str, int]]:
                 header = row
                 continue
             if header is None or len(row) < 14:
+                if header is not None:
+                    logger.debug("Skipped AP row with %d fields (need 14): %s", len(row), row)
                 continue
 
             bssid = row[0].lower()
@@ -155,6 +272,8 @@ def parse_airodump_csv(content: str) -> tuple[list[Network], dict[str, int]]:
                     header = row
                     continue
                 if header is None or len(row) < 6:
+                    if header is not None:
+                        logger.debug("Skipped station row with %d fields (need 6): %s", len(row), row)
                     continue
 
                 bssid = row[5].strip().lower()

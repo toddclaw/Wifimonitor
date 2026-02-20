@@ -1,5 +1,7 @@
 """Tests for wifi_common shared functions."""
 
+import logging
+
 import pytest
 
 from wifi_common import (
@@ -9,13 +11,13 @@ from wifi_common import (
     security_color,
     map_airodump_privacy,
     parse_airodump_csv,
+    is_valid_bssid,
+    is_valid_channel,
+    CommandRunner,
+    SubprocessRunner,
+    COLOR_TO_RICH,
+    GREEN, YELLOW, RED, ORANGE, BLACK, WHITE, CYAN, GRAY, DIM,
 )
-
-# -- Colors used in wifi_common --
-GREEN = (0, 255, 0)
-YELLOW = (255, 255, 0)
-RED = (255, 0, 0)
-ORANGE = (255, 165, 0)
 
 
 # ---------------------------------------------------------------------------
@@ -231,3 +233,168 @@ class TestParseAirodumpCsv:
         networks, client_counts = parse_airodump_csv(header_only)
         assert networks == []
         assert client_counts == {}
+
+
+# ---------------------------------------------------------------------------
+# COLOR_TO_RICH — unified color mapping
+# ---------------------------------------------------------------------------
+
+class TestColorToRich:
+    """COLOR_TO_RICH maps every RGB constant to a Rich color name."""
+
+    def test_all_rgb_constants_have_rich_names(self):
+        for rgb in [BLACK, WHITE, GREEN, YELLOW, RED, CYAN, GRAY, DIM, ORANGE]:
+            assert rgb in COLOR_TO_RICH, f"{rgb} missing from COLOR_TO_RICH"
+
+    def test_green_maps_to_green(self):
+        assert COLOR_TO_RICH[GREEN] == "green"
+
+    def test_red_maps_to_red(self):
+        assert COLOR_TO_RICH[RED] == "red"
+
+    def test_gray_maps_to_grey50(self):
+        assert COLOR_TO_RICH[GRAY] == "grey50"
+
+    def test_all_values_are_strings(self):
+        for rgb, name in COLOR_TO_RICH.items():
+            assert isinstance(name, str), f"{rgb} maps to non-string {name!r}"
+
+
+# ---------------------------------------------------------------------------
+# parse_airodump_csv — debug logging for skipped rows
+# ---------------------------------------------------------------------------
+
+class TestParseAirodumpCsvLogging:
+    """parse_airodump_csv logs skipped malformed rows at DEBUG level."""
+
+    def test_malformed_ap_row_logs_debug(self, caplog):
+        """AP row with too few fields after header triggers a debug log."""
+        csv_data = (
+            "BSSID, First time seen, Last time seen, channel, Speed,"
+            " Privacy, Cipher, Authentication, Power, # beacons, # IV,"
+            " LAN IP, ID-length, ESSID, Key\r\n"
+            "AA:BB:CC:DD:EE:01, short row\r\n"
+        )
+        with caplog.at_level(logging.DEBUG, logger="wifi_common"):
+            networks, _ = parse_airodump_csv(csv_data)
+        assert len(networks) == 0
+        assert any("Skipped AP row" in msg for msg in caplog.messages)
+
+    def test_malformed_station_row_logs_debug(self, caplog):
+        """Station row with too few fields after header triggers a debug log."""
+        csv_data = (
+            "BSSID, First time seen, Last time seen, channel, Speed,"
+            " Privacy, Cipher, Authentication, Power, # beacons, # IV,"
+            " LAN IP, ID-length, ESSID, Key\r\n"
+            "\r\n"
+            "Station MAC, First time seen, Last time seen, Power, # packets,"
+            " BSSID, Probed ESSIDs\r\n"
+            "11:22:33:44:55:01, short\r\n"
+        )
+        with caplog.at_level(logging.DEBUG, logger="wifi_common"):
+            parse_airodump_csv(csv_data)
+        assert any("Skipped station row" in msg for msg in caplog.messages)
+
+    def test_valid_rows_produce_no_skip_log(self, caplog):
+        """Well-formed CSV produces no skip debug messages."""
+        with caplog.at_level(logging.DEBUG, logger="wifi_common"):
+            parse_airodump_csv(SAMPLE_AIRODUMP_CSV)
+        skip_msgs = [m for m in caplog.messages if "Skipped" in m]
+        assert skip_msgs == []
+
+
+# ---------------------------------------------------------------------------
+# is_valid_bssid — MAC address format validation
+# ---------------------------------------------------------------------------
+
+class TestIsValidBssid:
+    """is_valid_bssid validates MAC address format."""
+
+    @pytest.mark.parametrize("bssid", [
+        "aa:bb:cc:dd:ee:ff",
+        "00:11:22:33:44:55",
+        "AA:BB:CC:DD:EE:FF",
+        "aA:bB:cC:dD:eE:fF",
+    ])
+    def test_valid_bssids(self, bssid):
+        assert is_valid_bssid(bssid) is True
+
+    @pytest.mark.parametrize("bssid", [
+        "",
+        "not-a-mac",
+        "aa:bb:cc:dd:ee",
+        "aa:bb:cc:dd:ee:ff:00",
+        "gg:hh:ii:jj:kk:ll",
+        "aa-bb-cc-dd-ee-ff",
+        "aabbccddeeff",
+        "aa:bb:cc:dd:ee:zz",
+    ])
+    def test_invalid_bssids(self, bssid):
+        assert is_valid_bssid(bssid) is False
+
+
+# ---------------------------------------------------------------------------
+# is_valid_channel — WiFi channel range validation
+# ---------------------------------------------------------------------------
+
+class TestIsValidChannel:
+    """is_valid_channel validates WiFi channel numbers."""
+
+    @pytest.mark.parametrize("channel", [1, 6, 11, 36, 149, 165])
+    def test_valid_channels(self, channel):
+        assert is_valid_channel(channel) is True
+
+    @pytest.mark.parametrize("channel", [0, -1, 197, 1000])
+    def test_invalid_channels(self, channel):
+        assert is_valid_channel(channel) is False
+
+
+# ---------------------------------------------------------------------------
+# CommandRunner protocol & SubprocessRunner
+# ---------------------------------------------------------------------------
+
+class TestCommandRunnerProtocol:
+    """CommandRunner protocol defines the subprocess injection seam."""
+
+    def test_subprocess_runner_satisfies_protocol(self):
+        """SubprocessRunner must be a structural subtype of CommandRunner."""
+        runner: CommandRunner = SubprocessRunner()
+        assert hasattr(runner, "run")
+        assert hasattr(runner, "popen")
+
+    def test_subprocess_runner_has_run_method(self):
+        runner = SubprocessRunner()
+        assert callable(runner.run)
+
+    def test_subprocess_runner_has_popen_method(self):
+        runner = SubprocessRunner()
+        assert callable(runner.popen)
+
+    def test_subprocess_runner_run_returns_completed_process(self):
+        """run() with a harmless command returns a CompletedProcess."""
+        import subprocess
+        runner = SubprocessRunner()
+        result = runner.run(["echo", "hello"], capture_output=True, text=True)
+        assert isinstance(result, subprocess.CompletedProcess)
+        assert result.returncode == 0
+        assert "hello" in result.stdout
+
+    def test_subprocess_runner_run_raises_on_missing_command(self):
+        """run() raises FileNotFoundError for nonexistent commands."""
+        runner = SubprocessRunner()
+        with pytest.raises(FileNotFoundError):
+            runner.run(["__nonexistent_cmd_12345__"])
+
+    def test_custom_runner_satisfies_protocol(self):
+        """A plain class with run/popen methods satisfies CommandRunner."""
+        import subprocess
+
+        class FakeRunner:
+            def run(self, cmd, **kwargs):
+                return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+            def popen(self, cmd, **kwargs):
+                raise NotImplementedError
+
+        fake: CommandRunner = FakeRunner()
+        result = fake.run(["test"])
+        assert result.returncode == 0
