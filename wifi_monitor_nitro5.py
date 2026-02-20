@@ -39,7 +39,7 @@ from rich.table import Table
 
 from wifi_common import (
     Network, signal_to_bars, signal_color, security_color, COLOR_TO_RICH,
-    CommandRunner, SubprocessRunner,
+    CommandRunner, SubprocessRunner, get_machine_name,
 )
 
 # -- Defaults --
@@ -410,7 +410,7 @@ def build_table(
     """
     show_key = bool(credentials)
     table = Table(
-        title="WiFi Monitor — Acer Nitro 5",
+        title=f"WiFi Monitor — {get_machine_name()}",
         title_style="bold cyan",
         caption=f"{len(networks)} networks found",
         caption_style="grey50",
@@ -488,7 +488,7 @@ def build_dns_table(domains: list[tuple[str, int]]) -> Table:
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
-        description="WiFi Monitor — Acer Nitro 5",
+        description=f"WiFi Monitor — {get_machine_name()}",
     )
     parser.add_argument(
         "-i", "--interface",
@@ -551,7 +551,7 @@ def main() -> None:
             )
             dns_tracker = None
 
-    console.print("[bold cyan]WiFi Monitor[/bold cyan] — Acer Nitro 5")
+    console.print(f"[bold cyan]WiFi Monitor[/bold cyan] — {get_machine_name()}")
     console.print(
         f"Scanning {'all interfaces' if not args.interface else args.interface}…\n"
     )

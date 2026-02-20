@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import logging
+import platform
 import re
 import subprocess
 from dataclasses import dataclass
@@ -162,6 +163,23 @@ def security_color(security: str) -> tuple:
     if security == "WEP":
         return YELLOW
     return GREEN
+
+
+# ---------------------------------------------------------------------------
+# Platform helpers
+# ---------------------------------------------------------------------------
+
+
+def get_machine_name() -> str:
+    """Return the machine's network name (hostname).
+
+    Used for display in the TUI instead of hardcoded device names.
+    """
+    try:
+        name = platform.node()
+        return name.strip() or "Unknown"
+    except Exception:
+        return "Unknown"
 
 
 # ---------------------------------------------------------------------------

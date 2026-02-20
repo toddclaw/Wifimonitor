@@ -4,6 +4,7 @@ target-version = "py39"
 [tool.ruff.lint.per-file-ignores]
 # E402: imports after the MIN_PYTHON version guard are intentional
 "wifi_monitor_nitro5.py" = ["E402"]
+"wifi_monitor_mac.py" = ["E402"]
 
 [tool.mypy]
 python_version = "3.9"

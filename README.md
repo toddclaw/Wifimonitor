@@ -2,7 +2,7 @@
 
 A Python WiFi monitoring tool that scans and displays nearby WiFi networks in a real-time terminal dashboard.
 
-Currently runs on **Linux laptops** using `nmcli` (NetworkManager). Raspberry Pi support with monitor mode is planned for a future phase.
+Runs on **Linux** (nmcli/NetworkManager) and **macOS** (built-in airport utility). Raspberry Pi support with monitor mode is planned for a future phase.
 
 ## Features
 
@@ -17,10 +17,12 @@ Currently runs on **Linux laptops** using `nmcli` (NetworkManager). Raspberry Pi
 ## Requirements
 
 - Python 3.9+
-- Linux with NetworkManager (`nmcli`)
-- No root required for cached scan results; `sudo` enables fresh rescans
+- **Linux**: NetworkManager (`nmcli`). No root required for cached scans; `sudo` enables fresh rescans.
+- **macOS**: Built-in `airport` utility (Apple80211 framework). Uses default WiFi interface (typically en0).
 
 ## Quick Start
+
+### Linux
 
 ```bash
 # Install dependencies
@@ -46,6 +48,25 @@ sudo python wifi_monitor_nitro5.py --dns -c credentials.csv --connect
 
 # Run with sudo to force fresh rescans
 sudo python wifi_monitor_nitro5.py
+```
+
+### macOS
+
+```bash
+# Install dependencies
+pip install -r requirements-laptop.txt
+
+# Run (uses en0 by default)
+python wifi_monitor_mac.py
+
+# Specify interface
+python wifi_monitor_mac.py -i en1
+
+# Load credentials and auto-connect
+python wifi_monitor_mac.py -c credentials.csv --connect
+
+# DNS capture (requires sudo)
+sudo python wifi_monitor_mac.py --dns
 ```
 
 Press `Ctrl+C` to exit cleanly.
@@ -111,7 +132,8 @@ sudo python wifi_monitor_nitro5.py --dns -c credentials.csv --connect
 
 ```
 Wifimonitor/
-├── wifi_monitor_nitro5.py     # Laptop entry point (Rich TUI, nmcli)
+├── wifi_monitor_nitro5.py     # Linux entry point (Rich TUI, nmcli)
+├── wifi_monitor_mac.py        # macOS entry point (Rich TUI, airport)
 ├── wifi_common.py             # Shared: Network dataclass, signal/color helpers,
 │                              #         airodump-ng CSV parser (Pi, future)
 ├── pyproject.toml             # Tool config (ruff, mypy)
@@ -120,8 +142,9 @@ Wifimonitor/
 ├── requirements.txt           # Pi dependencies (future)
 ├── .github/workflows/ci.yml   # CI pipeline (test, lint, security)
 ├── tests/
-│   ├── test_wifi_monitor_nitro5.py   # 153 tests — parsing, rendering, scanning, credentials, DNS, injection
-│   └── test_wifi_common.py           #  69 tests — helpers, airodump CSV, validation, colors, protocol
+│   ├── test_wifi_monitor_nitro5.py   # Linux parsing, rendering, scanning, credentials, DNS
+│   ├── test_wifi_monitor_mac.py      # macOS airport parsing, interface detection
+│   └── test_wifi_common.py           # Shared helpers, airodump CSV, validation, colors, protocol
 ├── CLAUDE.md                  # Agent guide and coding standards
 └── .claude/agents/            # Claude agent definitions
     ├── architect-agent.md     # Architecture research and design

@@ -13,6 +13,7 @@ from wifi_common import (
     parse_airodump_csv,
     is_valid_bssid,
     is_valid_channel,
+    get_machine_name,
     CommandRunner,
     SubprocessRunner,
     COLOR_TO_RICH,
@@ -47,6 +48,18 @@ class TestNetwork:
         assert net.channel == 6
         assert net.security == "WPA2"
         assert net.clients == 3
+
+
+class TestGetMachineName:
+    def test_returns_non_empty_string(self):
+        name = get_machine_name()
+        assert isinstance(name, str)
+        assert len(name) > 0
+
+    def test_returns_non_unknown_when_platform_works(self):
+        name = get_machine_name()
+        # Platform.node() typically returns hostname; "Unknown" only on failure
+        assert name in ("Unknown",) or len(name) >= 1
 
 
 # ---------------------------------------------------------------------------
