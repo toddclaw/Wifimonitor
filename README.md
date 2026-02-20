@@ -207,10 +207,13 @@ If monitor mode shows "client counts enabled" but no networks or client counts a
 
 ### Features
 
-- **Raspberry Pi support** (8 pts) -- Monitor mode scanning via airodump-ng with PiTFT display output. The CSV parser (`parse_airodump_csv`) and shared data structures are already implemented.
+- **Detect number of clients on each BSSID** -- accurately detect the number of clients on each BSSID.
+- **Display RF band for each BSSID** -- Display in output what RF band each BSSID is currently operating in.
+- **Auto-detect platform and wifi devices** -- Enable running just `wifi_monitor.py` and auto detect OS and WiFi devices.
 - **Deauth attack detection** (8 pts) -- Detect deauthentication/disassociation frames targeting your own network and alert in the TUI. Requires monitor mode capture and 802.11 management frame parsing.
 - **Rogue AP detection** (5 pts) -- Identify rogue access points impersonating known SSIDs with mismatched BSSIDs or unexpected channels. Works with existing nmcli scan data; needs a known-good baseline file.
 - **Unusual client behavior monitoring** (13 pts) -- Monitor for anomalous client activity on networks you own (e.g. rapid association/disassociation, probe floods). Requires monitor mode and rate-based anomaly heuristics.
+- **Raspberry Pi support** (8 pts) -- Monitor mode scanning via airodump-ng with PiTFT display output. The CSV parser (`parse_airodump_csv`) and shared data structures are already implemented.
 
 ## Hardware (Pi Phase)
 
