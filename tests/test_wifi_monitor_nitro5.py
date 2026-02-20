@@ -1048,6 +1048,35 @@ class TestAirodumpScanner:
             networks = scanner.scan()
         assert networks == []
 
+    def test_scan_hybrid_uses_nmcli_when_virtual_monitor(self):
+        """When using virtual monitor (mon0), scan uses nmcli for BSSID list and overlays client counts from airodump."""
+        from tests.test_wifi_common import SAMPLE_AIRODUMP_CSV
+
+        scanner = AirodumpScanner(interface="wlan0", prefix="/tmp/test_wifi")
+        scanner._monitor_is_virtual = True  # Simulate virtual monitor after start()
+        nmcli_networks = parse_nmcli_output(
+            r"aa\:bb\:cc\:dd\:ee\:01:HomeNetwork:6:85:WPA2" + "\n"
+            r"aa\:bb\:cc\:dd\:ee\:02:CoffeeShop:11:42:" + "\n"
+            r"aa\:bb\:cc\:dd\:ee\:03:OtherNet:1:70:WPA2" + "\n"
+        )
+        with (
+            patch("wifi_monitor_nitro5.glob.glob", return_value=["/tmp/test_wifi-01.csv"]),
+            patch("builtins.open", mock_open(read_data=SAMPLE_AIRODUMP_CSV)),
+            patch(
+                "wifi_monitor_nitro5.scan_wifi_nmcli",
+                return_value=nmcli_networks,
+            ),
+        ):
+            networks = scanner.scan()
+        # nmcli returns 3 networks; airodump has clients for aa:bb:cc:dd:ee:01 (2) and aa:bb:cc:dd:ee:02 (1)
+        assert len(networks) == 3
+        home = [n for n in networks if n.ssid == "HomeNetwork"][0]
+        coffee = [n for n in networks if n.ssid == "CoffeeShop"][0]
+        other = [n for n in networks if n.ssid == "OtherNet"][0]
+        assert home.clients == 2
+        assert coffee.clients == 1
+        assert other.clients == 0  # Not in airodump CSV
+
     def test_start_passes_cwd_and_background_to_airodump(self):
         """start() spawns airodump with cwd=/tmp and --background 1."""
         fake = _FakeRunner()

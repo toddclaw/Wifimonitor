@@ -773,12 +773,49 @@ class AirodumpScanner:
         return False
 
     def scan(self) -> list[Network]:
-        """Read the latest airodump-ng CSV and return networks with client counts."""
-        glob_pattern = f"{self.prefix}-*.csv"
-        files = sorted(glob.glob(glob_pattern))
+        """Read the latest airodump-ng CSV and return networks with client counts.
+
+        When using a virtual monitor interface (mon0), the original interface
+        (e.g. wlp4s0) stays in managed mode. In that case, use nmcli to get the
+        full BSSID list and overlay client counts from airodump. This avoids the
+        limited AP visibility that monitor mode often has on laptop WiFi.
+        """
         csv_path = self._latest_csv()
+        client_counts: dict[str, int] = {}
+        airodump_networks: list[Network] = []
+
+        if csv_path:
+            try:
+                with open(csv_path, encoding="utf-8", errors="replace") as f:
+                    content = f.read()
+                airodump_networks, client_counts = parse_airodump_csv(content)
+            except OSError:
+                if self._debug:
+                    _LOGGER.debug("scan failed to read %s", csv_path)
+
+        if self._monitor_is_virtual:
+            # Original interface is still managed: use nmcli for full BSSID list.
+            networks = scan_wifi_nmcli(
+                interface=self.interface, runner=self._runner
+            )
+            for net in networks:
+                net.clients = client_counts.get(net.bssid, 0)
+            if self._debug:
+                _LOGGER.debug(
+                    "hybrid scan: nmcli=%d networks, airodump clients for %d BSSIDs",
+                    len(networks),
+                    len(client_counts),
+                )
+            return networks
+
+        # Direct monitor mode: airodump-only.
+        if not csv_path:
+            return []
 
         if self._debug:
+            glob_pattern = f"{self.prefix}-*.csv"
+            files = sorted(glob.glob(glob_pattern))
+            total_clients = sum(client_counts.values())
             _LOGGER.debug(
                 "scan glob pattern=%s files=%s",
                 glob_pattern,
@@ -786,32 +823,15 @@ class AirodumpScanner:
             )
             _LOGGER.debug(
                 "scan selected_csv=%s",
-                csv_path if csv_path else "none - no CSV",
+                csv_path,
             )
-
-        if not csv_path:
-            return []
-
-        try:
-            with open(csv_path, encoding="utf-8", errors="replace") as f:
-                content = f.read()
-        except OSError:
-            if self._debug:
-                _LOGGER.debug("scan failed to read %s", csv_path)
-            return []
-
-        networks, client_counts = parse_airodump_csv(content)
-        total_clients = sum(client_counts.values())
-
-        if self._debug:
             _LOGGER.debug(
-                "scan parse: csv_size=%d bytes networks=%d clients_total=%d client_counts=%s",
-                len(content),
-                len(networks),
+                "scan parse: networks=%d clients_total=%d client_counts=%s",
+                len(airodump_networks),
                 total_clients,
                 dict(client_counts),
             )
-            for i, net in enumerate(networks[:10]):
+            for i, net in enumerate(airodump_networks[:10]):
                 ssid_display = net.ssid if net.ssid else "<hidden>"
                 _LOGGER.debug(
                     "scan network[%d]: bssid=%s ssid=%s ch=%s signal=%s clients=%s",
@@ -822,13 +842,13 @@ class AirodumpScanner:
                     net.signal,
                     net.clients,
                 )
-            if len(networks) > 10:
+            if len(airodump_networks) > 10:
                 _LOGGER.debug(
                     "scan ... and %d more networks (truncated)",
-                    len(networks) - 10,
+                    len(airodump_networks) - 10,
                 )
 
-        return networks
+        return airodump_networks
 
     def _latest_csv(self) -> str | None:
         files = sorted(glob.glob(f"{self.prefix}-*.csv"))

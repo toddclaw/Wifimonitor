@@ -109,6 +109,7 @@ sudo python wifi_monitor_nitro5.py --monitor -i wlan1
 - Requires root privileges and a WiFi interface that supports monitor mode.
 - Uses airodump-ng and `iw` to put the interface in monitor mode, capture 802.11 frames, and parse client associations from the CSV output.
 - No passphrase is required; client counts are derived from passive monitoring of management frames.
+- **Hybrid scan (virtual monitor):** When using a virtual monitor interface (mon0), the original interface (e.g. wlp4s0) stays in managed mode. In that case, the monitor uses nmcli for the full BSSID list and overlays client counts from airodump. This avoids the limited AP visibility that monitor mode often has on laptop WiFi.
 - If monitor mode cannot be enabled (missing tools, unsupported hardware, or permission denied), the tool falls back to nmcli scanning with client counts shown as 0.
 - When using `--monitor` with `--connect`, nmcli will use a different interface for connecting (the monitor interface cannot connect while in monitor mode).
 - The first scan may take up to 10 seconds; airodump-ng writes CSV every 5 seconds.
