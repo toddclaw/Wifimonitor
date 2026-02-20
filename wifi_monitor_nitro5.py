@@ -423,7 +423,7 @@ def build_table(
             ssid,
         ]
         if show_key:
-            has_key = net.ssid in credentials if net.ssid else False
+            has_key = (net.ssid in credentials) if (net.ssid and credentials) else False
             row.append("[green]*[/green]" if has_key else "")
         row.extend([
             escape(net.bssid.upper()),

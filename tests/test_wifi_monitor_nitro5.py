@@ -8,9 +8,7 @@ Follows TDD agent standards:
 - Unhappy-path coverage (malformed input, edge cases)
 """
 
-import os
 import subprocess
-import stat
 from unittest.mock import patch, MagicMock
 
 import pytest

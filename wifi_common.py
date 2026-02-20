@@ -5,7 +5,7 @@ from __future__ import annotations
 import csv
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 

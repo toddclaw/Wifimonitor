@@ -114,8 +114,11 @@ Wifimonitor/
 ├── wifi_monitor_nitro5.py     # Laptop entry point (Rich TUI, nmcli)
 ├── wifi_common.py             # Shared: Network dataclass, signal/color helpers,
 │                              #         airodump-ng CSV parser (Pi, future)
+├── pyproject.toml             # Tool config (ruff, mypy)
 ├── requirements-laptop.txt    # Laptop dependencies (rich>=13.0,<15)
+├── requirements-dev.txt       # Dev/CI tooling (pytest, ruff, mypy, pip-audit)
 ├── requirements.txt           # Pi dependencies (future)
+├── .github/workflows/ci.yml   # CI pipeline (test, lint, security)
 ├── tests/
 │   ├── test_wifi_monitor_nitro5.py   # 142 tests — parsing, rendering, scanning, credentials, DNS
 │   └── test_wifi_common.py           #  63 tests — helpers, airodump CSV, validation, colors
@@ -152,6 +155,7 @@ The codebase has been reviewed by DevSecOps and Red Team agents:
 - **Input clamping** -- Signal percentage values are clamped to 0-100 before conversion.
 - **Credentials safety** -- Credentials file permissions are checked; warns if world-readable. Passphrases are never displayed in the TUI.
 - **Input validation** -- BSSID format (MAC regex) and channel range (1-196) validated via `is_valid_bssid()` and `is_valid_channel()`.
+- **CI/CD pipeline** -- GitHub Actions workflow runs pytest (3.9 + 3.12 matrix), ruff, mypy, and pip-audit on every push and PR.
 
 ## Future Plans
 
@@ -161,10 +165,6 @@ The codebase has been reviewed by DevSecOps and Red Team agents:
 - **CommandRunner injection** (3 pts) -- Extract a `CommandRunner` protocol and inject it into `scan_wifi_nmcli()`, `connect_wifi_nmcli()`, and `DnsTracker` so subprocess calls are testable without `unittest.mock.patch`.
 - **Scanner and Renderer protocols** (3 pts) -- Define `ScannerProtocol` and `RendererProtocol` abstractions. Split `wifi_monitor_nitro5.py` into `NmcliScanner`, `RichRenderer`, and a thin `MonitorApp` coordinator (Single Responsibility).
 - **UX agent** (3 pts) -- Create a UX agent that evaluates and suggests improvements for both the CLI/TUI (Rich tables, layout, color, information density) and future GUI surfaces. Integrate into the manager pipeline alongside the existing review agents.
-
-### Security
-
-- **CI/CD security pipeline** (2 pts) -- Create `.github/workflows/security.yml` with pip-audit, ruff, and mypy checks. Add `requirements-dev.txt` with dev/test tooling.
 
 ### Features
 

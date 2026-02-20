@@ -14,7 +14,7 @@ automatically in CI — not just reviewed manually.
 |Malicious nmcli output exploiting Rich markup in SSID |Medium    |Medium  |Mitigated — SSIDs/BSSIDs escaped via `rich.markup.escape()`|
 |Inherited environment variables leaking sensitive data|Low       |Medium  |Mitigated — `_minimal_env()` passes only PATH/LC_ALL/HOME  |
 |Subprocess timeout/crash in scan loop                 |Medium    |Medium  |Mitigated — try/except for TimeoutExpired/FileNotFoundError|
-|Dependency CVE (rich or future deps)                  |Medium    |Variable|Partial — `rich>=13.0,<15` pinned; no automated scanning yet|
+|Dependency CVE (rich or future deps)                  |Medium    |Variable|Mitigated — CI runs `pip-audit` on every push/PR            |
 |DNS domain names exploiting Rich markup in display     |Medium    |Medium  |Mitigated — domains escaped via `rich.markup.escape()`     |
 |tcpdump subprocess resource leak on crash              |Low       |Medium  |Mitigated — stop() terminates+kills; daemon thread cleanup |
 |Elevated privilege abuse (future sudo/monitor mode)   |High (Pi) |High    |Future — design privilege drop before Pi phase             |
@@ -79,26 +79,16 @@ Add to `requirements-dev.txt`:
 pip-audit
 ```
 
-## CI/CD Security Gates
+## CI/CD Security Gates (IMPLEMENTED)
 
-Create `.github/workflows/security.yml`:
+CI pipeline is in `.github/workflows/ci.yml` with three jobs:
 
-```yaml
-name: Security
-on: [push, pull_request]
-jobs:
-  security:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.9'
-      - run: pip install pip-audit ruff mypy
-      - run: pip-audit -r requirements-laptop.txt
-      - run: ruff check src/ tests/
-      - run: mypy src/ --strict
-```
+- **test** -- pytest on Python 3.9 + 3.12 matrix with coverage
+- **lint** -- ruff + mypy on source files
+- **security** -- pip-audit against requirements-laptop.txt
+
+Config lives in `pyproject.toml` ([tool.ruff] and [tool.mypy] sections).
+Dev dependencies are in `requirements-dev.txt` (includes requirements-laptop.txt).
 
 ## Future Pi Phase — Additional Concerns
 

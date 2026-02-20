@@ -15,8 +15,11 @@ Wifimonitor/
 ├── wifi_monitor_nitro5.py     # Laptop entry point (Rich TUI, nmcli)
 ├── wifi_common.py             # Shared: Network dataclass, signal/color helpers,
 │                              #         airodump-ng CSV parser (Pi, future)
+├── pyproject.toml             # Tool config (ruff, mypy)
 ├── requirements.txt           # Pi requirements
 ├── requirements-laptop.txt    # Laptop requirements (rich>=13.0,<15)
+├── requirements-dev.txt       # Dev/CI tooling (pytest, ruff, mypy, pip-audit)
+├── .github/workflows/ci.yml   # CI pipeline (test, lint, security)
 ├── tests/
 │   ├── test_wifi_monitor_nitro5.py   # nmcli parsing, rendering, scanning tests
 │   └── test_wifi_common.py           # Helpers, airodump CSV parsing tests
@@ -104,7 +107,8 @@ pytest tests/ -v
 # Run with coverage
 pytest tests/ -v --cov=. --cov-report=term-missing
 
-# Linting (future — once src/ layout is adopted)
-# mypy src/
-# ruff check src/ tests/
+# Linting
+ruff check wifi_common.py wifi_monitor_nitro5.py tests/
+mypy wifi_common.py wifi_monitor_nitro5.py
+pip-audit -r requirements-laptop.txt
 ```
