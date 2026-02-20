@@ -94,6 +94,24 @@ sudo python wifi_monitor_nitro5.py --dns -c credentials.csv --connect
 - The top 15 most-queried domains are displayed, updated every scan cycle.
 - If tcpdump is not installed or cannot start, the feature is silently disabled and the normal network table is shown.
 
+## Monitor Mode (Client Count per BSSID)
+
+The `--monitor` flag enables client counting per access point using airodump-ng in monitor mode. A **Cli** column appears in the network table showing the number of associated clients for each BSSID.
+
+```bash
+# Monitor mode with default interface (wlan0)
+sudo python wifi_monitor_nitro5.py --monitor
+
+# Monitor mode on a specific interface (e.g. USB WiFi dongle)
+sudo python wifi_monitor_nitro5.py --monitor -i wlan1
+```
+
+- Requires root privileges and a WiFi interface that supports monitor mode.
+- Uses airodump-ng and `iw` to put the interface in monitor mode, capture 802.11 frames, and parse client associations from the CSV output.
+- No passphrase is required; client counts are derived from passive monitoring of management frames.
+- If monitor mode cannot be enabled (missing tools, unsupported hardware, or permission denied), the tool falls back to nmcli scanning with client counts shown as 0.
+- When using `--monitor` with `--connect`, nmcli will use a different interface for connecting (the monitor interface cannot connect while in monitor mode).
+
 ## Display Columns
 
 | Column   | Description                                               |
@@ -105,6 +123,7 @@ sudo python wifi_monitor_nitro5.py --dns -c credentials.csv --connect
 | Ch       | WiFi channel (2.4 GHz and 5 GHz)                         |
 | dBm      | Signal strength in dBm (-50 excellent, -100 none)         |
 | Sig      | Visual signal bars (0-4)                                  |
+| Cli      | Number of clients connected (when using `--monitor`)      |
 | Security | WPA3, WPA2, WPA, WEP, or Open                            |
 
 ## Project Structure

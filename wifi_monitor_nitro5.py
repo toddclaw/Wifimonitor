@@ -10,6 +10,7 @@ Usage:
     python wifi_monitor_nitro5.py -i wlan1            # specify interface
     python wifi_monitor_nitro5.py -c creds.csv        # load credentials file
     python wifi_monitor_nitro5.py -c creds.csv --connect  # auto-connect
+    sudo python wifi_monitor_nitro5.py --monitor      # client counts via airodump-ng
     sudo python wifi_monitor_nitro5.py --dns          # capture DNS queries
     sudo python wifi_monitor_nitro5.py --dns -c creds.csv --connect
 """
@@ -23,10 +24,13 @@ if sys.version_info < MIN_PYTHON:
     sys.exit(f"Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]}+ is required (found {sys.version}).")
 
 import argparse
+import atexit
 import collections
 import csv
+import glob
 import os
 import re
+import signal
 import stat
 import subprocess
 import threading
@@ -38,12 +42,15 @@ from rich.markup import escape
 from rich.table import Table
 
 from wifi_common import (
-    Network, signal_to_bars, signal_color, security_color, COLOR_TO_RICH,
+    Network, parse_airodump_csv, signal_to_bars, signal_color, security_color,
+    COLOR_TO_RICH,
     CommandRunner, SubprocessRunner,
 )
 
 # -- Defaults --
 SCAN_INTERVAL = 10  # seconds between refreshes
+AIRODUMP_PREFIX = "/tmp/wifi_monitor_nitro5"
+AIRODUMP_WRITE_INTERVAL = 5
 _DEFAULT_RUNNER = SubprocessRunner()
 
 
@@ -258,6 +265,132 @@ class DnsTracker:
             pass  # Process was terminated
 
 
+# ---------------------------------------------------------------------------
+# Monitor mode + airodump-ng (client count per BSSID)
+# ---------------------------------------------------------------------------
+
+def _enable_monitor_mode(interface: str, runner: CommandRunner | None = None) -> bool:
+    """Put a WiFi interface into monitor mode using iw.
+
+    Returns True if successful, False otherwise.
+    """
+    runner = runner or _DEFAULT_RUNNER
+    env = _minimal_env()
+    cmds = [
+        ["sudo", "ip", "link", "set", interface, "down"],
+        ["sudo", "iw", "dev", interface, "set", "type", "monitor"],
+        ["sudo", "ip", "link", "set", interface, "up"],
+    ]
+    try:
+        for cmd in cmds:
+            result = runner.run(cmd, capture_output=True, timeout=10, env=env)
+            if result.returncode != 0:
+                return False
+        return True
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return False
+
+
+def _disable_monitor_mode(interface: str, runner: CommandRunner | None = None) -> None:
+    """Restore a WiFi interface to managed mode."""
+    runner = runner or _DEFAULT_RUNNER
+    env = _minimal_env()
+    cmds = [
+        ["sudo", "ip", "link", "set", interface, "down"],
+        ["sudo", "iw", "dev", interface, "set", "type", "managed"],
+        ["sudo", "ip", "link", "set", interface, "up"],
+    ]
+    for cmd in cmds:
+        try:
+            runner.run(cmd, capture_output=True, timeout=10, env=env)
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            pass
+
+
+class AirodumpScanner:
+    """Manage an airodump-ng process and parse its CSV for client counts.
+
+    Use start() to enable monitor mode and launch airodump-ng, scan() to read
+    the latest CSV and return networks with client counts, and stop() to clean up.
+    """
+
+    def __init__(
+        self,
+        interface: str,
+        prefix: str = AIRODUMP_PREFIX,
+        runner: CommandRunner | None = None,
+    ) -> None:
+        self.interface = interface
+        self.prefix = prefix
+        self._runner = runner or _DEFAULT_RUNNER
+        self._proc: subprocess.Popen[bytes] | None = None
+        self._monitor_enabled = False
+
+    def start(self) -> bool:
+        """Enable monitor mode and start airodump-ng. Returns True if successful."""
+        if not _enable_monitor_mode(self.interface, self._runner):
+            return False
+        self._monitor_enabled = True
+        self._cleanup_old_files()
+        env = _minimal_env()
+        try:
+            self._proc = self._runner.popen(
+                [
+                    "sudo", "airodump-ng",
+                    self.interface,
+                    "--band", "abg",
+                    "--write", self.prefix,
+                    "--output-format", "csv",
+                    "--write-interval", str(AIRODUMP_WRITE_INTERVAL),
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env=env,
+            )
+        except (FileNotFoundError, OSError):
+            self.stop()
+            return False
+        return True
+
+    def stop(self) -> None:
+        """Stop airodump-ng and restore managed mode."""
+        if self._proc and self._proc.poll() is None:
+            self._proc.send_signal(signal.SIGTERM)
+            try:
+                self._proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self._proc.kill()
+            self._proc = None
+        if self._monitor_enabled:
+            _disable_monitor_mode(self.interface, self._runner)
+            self._monitor_enabled = False
+        self._cleanup_old_files()
+
+    def scan(self) -> list[Network]:
+        """Read the latest airodump-ng CSV and return networks with client counts."""
+        csv_path = self._latest_csv()
+        if not csv_path:
+            return []
+        try:
+            with open(csv_path, encoding="utf-8", errors="replace") as f:
+                content = f.read()
+        except OSError:
+            return []
+        networks, _ = parse_airodump_csv(content)
+        return networks
+
+    def _latest_csv(self) -> str | None:
+        files = sorted(glob.glob(f"{self.prefix}-*.csv"))
+        return files[-1] if files else None
+
+    def _cleanup_old_files(self) -> None:
+        for path in glob.glob(f"{self.prefix}-*"):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+
 def scan_wifi_nmcli(
     interface: str | None = None,
     *,
@@ -426,6 +559,7 @@ def build_table(
     table.add_column("Ch", justify="right", width=4)
     table.add_column("dBm", justify="right", width=5)
     table.add_column("Sig", width=5)
+    table.add_column("Cli", justify="right", width=4)
     table.add_column("Security", width=8)
 
     for i, net in enumerate(networks, 1):
@@ -447,6 +581,7 @@ def build_table(
             str(net.channel),
             f"[{sig_c}]{net.signal}[/{sig_c}]",
             f"[{sig_c}]{bar_str}[/{sig_c}]",
+            str(net.clients),
             f"[{sec_c}]{net.security}[/{sec_c}]",
         ])
 
@@ -509,6 +644,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="capture and display DNS queries (requires root / tcpdump)",
     )
+    parser.add_argument(
+        "--monitor",
+        action="store_true",
+        help="use monitor mode with airodump-ng to detect client counts per BSSID (requires root, compatible WiFi)",
+    )
     return parser.parse_args(argv)
 
 
@@ -523,6 +663,23 @@ def main() -> None:
     credentials: dict[str, str] | None = None
     connected = False
     dns_tracker: DnsTracker | None = None
+    airodump_scanner: AirodumpScanner | None = None
+
+    if args.monitor:
+        monitor_interface = args.interface or "wlan0"
+        airodump_scanner = AirodumpScanner(interface=monitor_interface)
+        if airodump_scanner.start():
+            atexit.register(airodump_scanner.stop)
+            console.print(
+                f"[bold cyan]WiFi Monitor[/bold cyan] — "
+                f"[green]monitor mode on {monitor_interface}, client counts enabled[/green]"
+            )
+        else:
+            console.print(
+                "[bold cyan]WiFi Monitor[/bold cyan] — "
+                "[yellow]monitor mode failed (airodump-ng/iw not found or no permission) — falling back to nmcli[/yellow]"
+            )
+            airodump_scanner = None
 
     if args.credentials:
         credentials = load_credentials(args.credentials)
@@ -552,14 +709,20 @@ def main() -> None:
             dns_tracker = None
 
     console.print("[bold cyan]WiFi Monitor[/bold cyan] — Acer Nitro 5")
-    console.print(
-        f"Scanning {'all interfaces' if not args.interface else args.interface}…\n"
-    )
+    if airodump_scanner:
+        console.print(f"Scanning {airodump_scanner.interface} (monitor mode)…\n")
+    else:
+        console.print(
+            f"Scanning {'all interfaces' if not args.interface else args.interface}…\n"
+        )
 
     try:
         with Live(console=console, refresh_per_second=1, screen=True) as live:
             while True:
-                networks = scan_wifi_nmcli(args.interface)
+                if airodump_scanner is not None:
+                    networks = airodump_scanner.scan()
+                else:
+                    networks = scan_wifi_nmcli(args.interface)
                 network_table = build_table(networks, credentials=credentials)
 
                 if dns_tracker is not None:
@@ -569,13 +732,16 @@ def main() -> None:
                     live.update(network_table)
 
                 # Auto-connect on first scan if requested
+                # When monitor mode is active, the scan interface is in monitor mode
+                # and cannot connect; use interface=None so nmcli picks a managed one.
                 if args.connect and credentials and not connected:
+                    connect_iface = None if airodump_scanner else args.interface
                     for net in networks:
                         if net.ssid and net.ssid in credentials:
                             ok = connect_wifi_nmcli(
                                 net.ssid,
                                 credentials[net.ssid],
-                                interface=args.interface,
+                                interface=connect_iface,
                             )
                             if ok:
                                 connected = True
@@ -585,6 +751,9 @@ def main() -> None:
     except KeyboardInterrupt:
         if dns_tracker is not None:
             dns_tracker.stop()
+        if airodump_scanner is not None:
+            airodump_scanner.stop()
+            atexit.unregister(airodump_scanner.stop)
         console.print("\n[bold cyan]WiFi Monitor[/bold cyan] — stopped.")
         sys.exit(0)
 

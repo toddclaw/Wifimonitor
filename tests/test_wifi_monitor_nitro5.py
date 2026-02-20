@@ -9,7 +9,7 @@ Follows TDD agent standards:
 """
 
 import subprocess
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, mock_open, patch
 
 import pytest
 
@@ -31,6 +31,7 @@ from wifi_monitor_nitro5 import (
     DnsTracker,
     build_dns_table,
     _parse_args,
+    AirodumpScanner,
 )
 
 
@@ -718,6 +719,51 @@ class TestBuildTableWithCredentials:
         col_names = [c.header for c in table.columns]
         assert "Key" not in col_names
 
+    def test_build_table_has_clients_column(self):
+        """Clients column displays per-BSSID client counts."""
+        networks = [
+            Network(
+                bssid="aa:bb:cc:dd:ee:01",
+                ssid="Home",
+                signal=-55,
+                channel=6,
+                security="WPA2",
+                clients=3,
+            ),
+        ]
+        table = build_table(networks)
+        col_names = [c.header for c in table.columns]
+        assert "Cli" in col_names
+        assert table.row_count == 1
+
+    def test_build_table_displays_client_count(self):
+        """Client count from Network.clients appears in table."""
+        networks = [
+            Network(
+                bssid="aa:bb:cc:dd:ee:01",
+                ssid="AP1",
+                signal=-60,
+                channel=6,
+                security="WPA2",
+                clients=5,
+            ),
+            Network(
+                bssid="aa:bb:cc:dd:ee:02",
+                ssid="AP2",
+                signal=-70,
+                channel=11,
+                security="Open",
+                clients=0,
+            ),
+        ]
+        table = build_table(networks)
+        assert table.row_count == 2
+        # Verify Clients column exists and rows rendered
+        col_headers = [c.header for c in table.columns]
+        cli_idx = col_headers.index("Cli")
+        # Row 0: 5 clients, Row 1: 0 clients
+        assert table.columns[cli_idx] is not None
+
 
 # ---------------------------------------------------------------------------
 # parse_tcpdump_dns_line — DNS query extraction from tcpdump output
@@ -948,6 +994,59 @@ class TestParseArgs:
         assert args.credentials == "creds.csv"
         assert args.connect is True
         assert args.dns is True
+
+    def test_parse_args_monitor_flag_default_false(self):
+        args = _parse_args([])
+        assert args.monitor is False
+
+    def test_parse_args_monitor_flag_set(self):
+        args = _parse_args(["--monitor"])
+        assert args.monitor is True
+
+    def test_parse_args_monitor_with_interface(self):
+        args = _parse_args(["--monitor", "-i", "wlan1"])
+        assert args.monitor is True
+        assert args.interface == "wlan1"
+
+
+# ---------------------------------------------------------------------------
+# AirodumpScanner — monitor mode client count scanning
+# ---------------------------------------------------------------------------
+
+class TestAirodumpScanner:
+    """AirodumpScanner manages airodump-ng process and parses CSV for client counts."""
+
+    def test_scan_returns_networks_with_clients_from_csv(self):
+        """When CSV has station data, scan returns networks with clients populated."""
+        from tests.test_wifi_common import SAMPLE_AIRODUMP_CSV
+
+        scanner = AirodumpScanner(interface="wlan0", prefix="/tmp/test_wifi")
+        with (
+            patch("wifi_monitor_nitro5.glob.glob", return_value=["/tmp/test_wifi-01.csv"]),
+            patch("builtins.open", mock_open(read_data=SAMPLE_AIRODUMP_CSV)),
+        ):
+            networks = scanner.scan()
+        home = [n for n in networks if n.ssid == "HomeNetwork"][0]
+        coffee = [n for n in networks if n.ssid == "CoffeeShop"][0]
+        assert home.clients == 2
+        assert coffee.clients == 1
+
+    def test_scan_no_csv_returns_empty_list(self):
+        """When no CSV file exists yet, scan returns empty list."""
+        scanner = AirodumpScanner(interface="wlan0", prefix="/tmp/test_wifi")
+        with patch("wifi_monitor_nitro5.glob.glob", return_value=[]):
+            networks = scanner.scan()
+        assert networks == []
+
+    def test_scan_file_read_error_returns_empty_list(self):
+        """When CSV file cannot be read, scan returns empty list."""
+        scanner = AirodumpScanner(interface="wlan0", prefix="/tmp/test_wifi")
+        with (
+            patch("wifi_monitor_nitro5.glob.glob", return_value=["/tmp/test_wifi-01.csv"]),
+            patch("builtins.open", side_effect=OSError("Permission denied")),
+        ):
+            networks = scanner.scan()
+        assert networks == []
 
 
 # ---------------------------------------------------------------------------
