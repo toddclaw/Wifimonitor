@@ -26,6 +26,7 @@ Wifimonitor/
 │       ├── tdd-agent.md
 │       ├── devsecops-agent.md
 │       ├── red-team-agent.md
+│       ├── scrum-master-agent.md
 │       └── manager-agent.md
 └── .gitignore
 ```
@@ -87,16 +88,17 @@ Reference the agent at the start of a session to set its role:
 
 |Agent              |File                 |Use When                                |
 |-------------------|---------------------|----------------------------------------|
-|Architect          |`architect-agent.md` |Research approaches, define APIs/modules|
-|TDD / Craftsmanship|`tdd-agent.md`       |Writing any production or test code     |
-|DevSecOps          |`devsecops-agent.md` |Security review, dependency audit, CI/CD|
-|Red Team           |`red-team-agent.md`  |Adversarial review before merging       |
-|Manager            |`manager-agent.md`   |Orchestrate all agents end-to-end       |
+|Architect          |`architect-agent.md`      |Research approaches, define APIs/modules     |
+|TDD / Craftsmanship|`tdd-agent.md`            |Writing any production or test code          |
+|DevSecOps          |`devsecops-agent.md`      |Security review, dependency audit, CI/CD     |
+|Red Team           |`red-team-agent.md`       |Adversarial review before merging            |
+|Scrum Master       |`scrum-master-agent.md`   |Backlog grooming, prioritization, retros     |
+|Manager            |`manager-agent.md`        |Orchestrate all agents end-to-end            |
 
 ## Test Commands
 
 ```bash
-# Run all 172 tests
+# Run all 205 tests
 pytest tests/ -v
 
 # Run with coverage

@@ -125,6 +125,7 @@ Wifimonitor/
     ├── tdd-agent.md           # TDD / Software Craftsmanship
     ├── devsecops-agent.md     # Security review, dependency audit
     ├── red-team-agent.md      # Adversarial review
+    ├── scrum-master-agent.md  # Backlog grooming, prioritization, retros
     └── manager-agent.md       # Orchestrator (coordinates all agents)
 ```
 
