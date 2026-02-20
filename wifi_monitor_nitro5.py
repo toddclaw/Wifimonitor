@@ -54,8 +54,9 @@ SCAN_INTERVAL = 10  # seconds between refreshes
 _LOGGER = logging.getLogger("wifi_monitor_nitro5")
 AIRODUMP_PREFIX = "/tmp/wifi_monitor_nitro5"
 AIRODUMP_STDERR_LOG = "/tmp/wifi_monitor_nitro5_airodump.log"
+AIRODUMP_MONITOR_LOG = "/tmp/wifi_monitor_nitro5_monitor.log"
 AIRODUMP_WRITE_INTERVAL = 5
-AIRODUMP_STARTUP_WAIT = 2  # seconds to wait before checking if process is still alive
+AIRODUMP_STARTUP_WAIT = 6  # wait for first CSV write (airodump --write-interval is 5s)
 _DEFAULT_RUNNER = SubprocessRunner()
 
 
@@ -274,6 +275,55 @@ class DnsTracker:
 # Monitor mode + airodump-ng (client count per BSSID)
 # ---------------------------------------------------------------------------
 
+def _interface_supports_monitor(interface: str, runner: CommandRunner | None = None) -> bool:
+    """Check if the interface's phy supports monitor mode via iw list.
+
+    Returns True if monitor mode is in supported interface modes, or if
+    we cannot determine (e.g. iw not found) — in that case we allow the attempt.
+    """
+    runner = runner or _DEFAULT_RUNNER
+    env = _minimal_env()
+    try:
+        # Get wiphy index for this interface
+        result = runner.run(
+            ["iw", "dev", interface, "info"],
+            capture_output=True,
+            timeout=5,
+            env=env,
+        )
+        if result.returncode != 0:
+            return True  # Allow attempt; will fail later with diagnostics
+        out = result.stdout if isinstance(result.stdout, str) else result.stdout.decode("utf-8", errors="replace")
+        match = re.search(r"wiphy\s+(\d+)", out)
+        if not match:
+            return True
+        wiphy = match.group(1)
+        # Check phy's supported interface modes
+        phy_result = runner.run(
+            ["iw", "phy", f"phy{wiphy}", "info"],
+            capture_output=True,
+            timeout=5,
+            env=env,
+        )
+        if phy_result.returncode != 0:
+            return True
+        phy_out = phy_result.stdout if isinstance(phy_result.stdout, str) else phy_result.stdout.decode("utf-8", errors="replace")
+        # Look for "Supported interface modes" section and check for monitor
+        in_modes = False
+        for line in phy_out.splitlines():
+            if "Supported interface modes" in line:
+                in_modes = True
+                continue
+            if in_modes:
+                if re.match(r"\s+Band\s+", line) or re.match(r"\s+max #", line):
+                    break  # Next section
+                if "monitor" in line.lower():
+                    return True
+        return False  # Found modes section but no monitor
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return True  # Allow attempt
+
+
 def _set_nm_managed(interface: str, managed: bool, runner: CommandRunner | None = None) -> None:
     """Tell NetworkManager to manage or unmanage the interface.
 
@@ -298,6 +348,7 @@ def _enable_monitor_mode(interface: str, runner: CommandRunner | None = None) ->
 
     Asks NetworkManager to unmanage the interface first so it does not reclaim it.
     Returns True if successful, False otherwise.
+    On failure, logs the failing command and its stderr/stdout to AIRODUMP_MONITOR_LOG.
     """
     runner = runner or _DEFAULT_RUNNER
     env = _minimal_env()
@@ -311,10 +362,109 @@ def _enable_monitor_mode(interface: str, runner: CommandRunner | None = None) ->
         for cmd in cmds:
             result = runner.run(cmd, capture_output=True, timeout=10, env=env)
             if result.returncode != 0:
+                _log_monitor_failure(
+                    f"Command failed: {' '.join(cmd)}",
+                    result.returncode,
+                    result.stdout,
+                    result.stderr,
+                )
                 return False
+        if not _verify_monitor_mode(interface, runner):
+            return False
         return True
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
+        _log_monitor_failure(
+            f"Exception running monitor mode command: {e!r}",
+            None,
+            None,
+            None,
+        )
         return False
+
+
+def _verify_monitor_mode(interface: str, runner: CommandRunner | None = None) -> bool:
+    """Verify the interface is actually in monitor mode via iw dev info."""
+    runner = runner or _DEFAULT_RUNNER
+    env = _minimal_env()
+    try:
+        result = runner.run(
+            ["iw", "dev", interface, "info"],
+            capture_output=True,
+            timeout=5,
+            env=env,
+        )
+        if result.returncode != 0:
+            _log_monitor_failure(
+                f"iw dev {interface} info failed",
+                result.returncode,
+                result.stdout,
+                result.stderr,
+            )
+            return False
+        out = result.stdout if isinstance(result.stdout, str) else result.stdout.decode("utf-8", errors="replace")
+        if "type monitor" not in out:
+            _log_monitor_failure(
+                f"Interface {interface} is not type monitor (iw output: {out!r})",
+                None,
+                None,
+                None,
+            )
+            return False
+        return True
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
+        _log_monitor_failure(
+            f"Exception verifying monitor mode: {e!r}",
+            None,
+            None,
+            None,
+        )
+        return False
+
+
+def _log_airodump_exit(
+    returncode: int | None,
+    cmd: list[str],
+    stderr_file: io.TextIOWrapper | None,
+) -> None:
+    """Append airodump exit diagnosis to the stderr log for debugging."""
+    try:
+        if stderr_file is not None:
+            stderr_file.flush()
+        with open(AIRODUMP_STDERR_LOG, "a", encoding="utf-8") as f:
+            f.write(f"\n[airodump exited] returncode={returncode}\n")
+            f.write(f"[command] {' '.join(cmd)}\n")
+    except OSError:
+        pass
+
+
+def _log_monitor_failure(
+    msg: str,
+    returncode: int | None,
+    stdout: str | bytes | None,
+    stderr: str | bytes | None,
+) -> None:
+    """Write monitor mode failure details to AIRODUMP_MONITOR_LOG."""
+    def _decode(v: str | bytes | None) -> str:
+        if v is None:
+            return "(none)"
+        if isinstance(v, bytes):
+            return v.decode("utf-8", errors="replace")
+        return v
+
+    try:
+        with open(AIRODUMP_MONITOR_LOG, "a", encoding="utf-8") as f:
+            f.write(f"[monitor] {msg}\n")
+            if returncode is not None:
+                f.write(f"  returncode: {returncode}\n")
+            out = _decode(stdout)
+            err = _decode(stderr)
+            if out.strip():
+                f.write(f"  stdout: {out}\n")
+            if err.strip():
+                f.write(f"  stderr: {err}\n")
+            f.write("\n")
+    except OSError:
+        pass
 
 
 def _disable_monitor_mode(interface: str, runner: CommandRunner | None = None) -> None:
@@ -356,11 +506,22 @@ class AirodumpScanner:
         self._monitor_enabled = False
         self._debug = debug
         self._stderr_file: io.TextIOWrapper | None = None
+        self._last_cmd: list[str] = []
+        self._exit_logged = False
 
-    def start(self) -> bool:
-        """Enable monitor mode and start airodump-ng. Returns True if successful."""
+    def start(self) -> tuple[bool, str | None]:
+        """Enable monitor mode and start airodump-ng.
+
+        Returns:
+            (True, None) if successful.
+            (False, reason) on failure. reason is "monitor_mode" if iw/ip failed,
+            "airodump_exit" if airodump exited immediately, or "airodump_spawn"
+            if airodump could not be started (FileNotFoundError, etc.).
+        """
+        if not _interface_supports_monitor(self.interface, self._runner):
+            return False, "monitor_unsupported"
         if not _enable_monitor_mode(self.interface, self._runner):
-            return False
+            return False, "monitor_mode"
         self._monitor_enabled = True
         self._cleanup_old_files()
         env = _minimal_env()
@@ -378,17 +539,18 @@ class AirodumpScanner:
             "--background", "1",
         ]
         stderr_dest: int | io.TextIOWrapper = subprocess.DEVNULL
-        if self._debug:
-            try:
-                self._stderr_file = open(AIRODUMP_STDERR_LOG, "w", encoding="utf-8")
-                stderr_dest = self._stderr_file
+        try:
+            self._stderr_file = open(AIRODUMP_STDERR_LOG, "w", encoding="utf-8")
+            stderr_dest = self._stderr_file
+            if self._debug:
                 _LOGGER.debug(
                     "airodump stderr -> %s | cwd=/tmp | prefix=%s",
                     AIRODUMP_STDERR_LOG,
                     self.prefix,
                 )
-            except OSError:
-                pass
+        except OSError:
+            pass
+        self._last_cmd = cmd
         try:
             self._proc = self._runner.popen(
                 cmd,
@@ -400,17 +562,18 @@ class AirodumpScanner:
             )
         except (FileNotFoundError, OSError):
             self.stop()
-            return False
+            return False, "airodump_spawn"
         time.sleep(AIRODUMP_STARTUP_WAIT)
         if self._proc.poll() is not None:
+            _log_airodump_exit(self._proc.returncode, cmd, self._stderr_file)
             _LOGGER.debug(
                 "airodump exited with code %s (see %s)",
                 self._proc.returncode,
-                AIRODUMP_STDERR_LOG if self._debug else "stderr",
+                AIRODUMP_STDERR_LOG,
             )
             self.stop()
-            return False
-        return True
+            return False, "airodump_exit"
+        return True, None
 
     def stop(self) -> None:
         """Stop airodump-ng and restore managed mode."""
@@ -431,6 +594,19 @@ class AirodumpScanner:
             _disable_monitor_mode(self.interface, self._runner)
             self._monitor_enabled = False
         self._cleanup_old_files()
+
+    def is_alive(self) -> bool:
+        """Return True if the airodump process is still running."""
+        return self._proc is not None and self._proc.poll() is None
+
+    def log_exit_if_dead(self) -> bool:
+        """If the process has exited, append diagnosis to the log (once). Returns False if dead."""
+        if self._proc is None or self._proc.poll() is None:
+            return True
+        if not self._exit_logged:
+            _log_airodump_exit(self._proc.returncode, self._last_cmd, self._stderr_file)
+            self._exit_logged = True
+        return False
 
     def scan(self) -> list[Network]:
         """Read the latest airodump-ng CSV and return networks with client counts."""
@@ -611,6 +787,7 @@ def _bar_string(bars: int) -> str:
 def build_table(
     networks: list[Network],
     credentials: dict[str, str] | None = None,
+    caption_override: str | None = None,
 ) -> Table:
     """Build a Rich Table displaying the scanned networks.
 
@@ -619,12 +796,14 @@ def build_table(
         credentials: Optional dict of SSID -> passphrase.  When provided,
             a "Key" column is added showing which networks have known
             passphrases.
+        caption_override: Optional caption to use instead of default.
     """
     show_key = bool(credentials)
+    caption = caption_override if caption_override is not None else f"{len(networks)} networks found"
     table = Table(
         title="WiFi Monitor — Acer Nitro 5",
         title_style="bold cyan",
-        caption=f"{len(networks)} networks found",
+        caption=caption,
         caption_style="grey50",
         expand=True,
         show_lines=False,
@@ -762,16 +941,25 @@ def main() -> None:
         airodump_scanner = AirodumpScanner(
             interface=monitor_interface, debug=args.debug
         )
-        if airodump_scanner.start():
+        ok, failure_reason = airodump_scanner.start()
+        if ok:
             atexit.register(airodump_scanner.stop)
             console.print(
                 f"[bold cyan]WiFi Monitor[/bold cyan] — "
                 f"[green]monitor mode on {monitor_interface}, client counts enabled[/green]"
             )
         else:
+            if failure_reason == "monitor_unsupported":
+                msg = "interface does not support monitor mode — try a USB WiFi adapter"
+            elif failure_reason == "monitor_mode":
+                msg = "monitor mode failed at iw/ip step — check /tmp/wifi_monitor_nitro5_monitor.log"
+            elif failure_reason == "airodump_exit":
+                msg = "airodump-ng exited — check /tmp/wifi_monitor_nitro5_airodump.log"
+            else:
+                msg = "airodump-ng/iw not found or no permission"
             console.print(
                 "[bold cyan]WiFi Monitor[/bold cyan] — "
-                "[yellow]monitor mode failed (airodump-ng/iw not found or no permission) — falling back to nmcli[/yellow]"
+                f"[yellow]{msg} — falling back to nmcli[/yellow]"
             )
             airodump_scanner = None
 
@@ -813,11 +1001,26 @@ def main() -> None:
     try:
         with Live(console=console, refresh_per_second=1, screen=True) as live:
             while True:
+                caption_override: str | None = None
                 if airodump_scanner is not None:
-                    networks = airodump_scanner.scan()
+                    if not airodump_scanner.log_exit_if_dead():
+                        _LOGGER.info(
+                            "airodump exited during scan — see %s",
+                            AIRODUMP_STDERR_LOG,
+                        )
+                        caption_override = (
+                            f"airodump exited — nmcli fallback (check {AIRODUMP_STDERR_LOG})"
+                        )
+                        networks = scan_wifi_nmcli(args.interface)
+                    else:
+                        networks = airodump_scanner.scan()
                 else:
                     networks = scan_wifi_nmcli(args.interface)
-                network_table = build_table(networks, credentials=credentials)
+                network_table = build_table(
+                    networks,
+                    credentials=credentials,
+                    caption_override=caption_override,
+                )
 
                 if dns_tracker is not None:
                     dns_table = build_dns_table(dns_tracker.top())

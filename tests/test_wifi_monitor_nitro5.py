@@ -1054,12 +1054,29 @@ class TestAirodumpScanner:
         mock_proc = MagicMock()
         mock_proc.poll.return_value = None
         fake.set_popen_result(mock_proc)
+        # 2 for _interface_supports_monitor (iw dev info, iw phy phy0 info)
+        # + nmcli + 3 ip/iw monitor setup + 1 iw dev info verify
+        success = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        iw_dev_info = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="Interface wlan0\n  wiphy 0\n", stderr=""
+        )
+        iw_phy_info = subprocess.CompletedProcess(
+            args=[], returncode=0,
+            stdout="Supported interface modes:\n * managed\n * monitor\n", stderr=""
+        )
+        iw_verify = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="Interface wlan0\n  type monitor\n", stderr=""
+        )
+        fake.set_run_results(
+            iw_dev_info, iw_phy_info,
+            success, success, success, success, iw_verify,
+        )
         scanner = AirodumpScanner(interface="wlan0", runner=fake)
         with (
             patch("wifi_monitor_nitro5.os.geteuid", return_value=0),
             patch("wifi_monitor_nitro5.time.sleep"),
         ):
-            ok = scanner.start()
+            ok, _ = scanner.start()
         assert ok is True
         assert len(fake.popen_calls) == 1
         cmd, kwargs = fake.popen_calls[0]
@@ -1075,13 +1092,29 @@ class TestAirodumpScanner:
         mock_proc = MagicMock()
         mock_proc.poll.return_value = 1
         fake.set_popen_result(mock_proc)
+        success = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        iw_dev_info = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="Interface wlan0\n  wiphy 0\n", stderr=""
+        )
+        iw_phy_info = subprocess.CompletedProcess(
+            args=[], returncode=0,
+            stdout="Supported interface modes:\n * managed\n * monitor\n", stderr=""
+        )
+        iw_verify = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="Interface wlan0\n  type monitor\n", stderr=""
+        )
+        fake.set_run_results(
+            iw_dev_info, iw_phy_info,
+            success, success, success, success, iw_verify,
+        )
         scanner = AirodumpScanner(interface="wlan0", runner=fake)
         with (
             patch("wifi_monitor_nitro5.os.geteuid", return_value=0),
             patch("wifi_monitor_nitro5.time.sleep"),
         ):
-            ok = scanner.start()
+            ok, reason = scanner.start()
         assert ok is False
+        assert reason == "airodump_exit"
 
 
 # ---------------------------------------------------------------------------

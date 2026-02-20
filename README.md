@@ -111,7 +111,10 @@ sudo python wifi_monitor_nitro5.py --monitor -i wlan1
 - No passphrase is required; client counts are derived from passive monitoring of management frames.
 - If monitor mode cannot be enabled (missing tools, unsupported hardware, or permission denied), the tool falls back to nmcli scanning with client counts shown as 0.
 - When using `--monitor` with `--connect`, nmcli will use a different interface for connecting (the monitor interface cannot connect while in monitor mode).
-- Use `--debug` to troubleshoot: it enables verbose logging and captures airodump-ng stderr to `/tmp/wifi_monitor_nitro5_airodump.log` when CSV files are missing.
+- The first scan may take up to 10 seconds; airodump-ng writes CSV every 5 seconds.
+- airodump-ng stderr is always captured to `/tmp/wifi_monitor_nitro5_airodump.log` for troubleshooting. Use `--debug` for additional verbose logging.
+
+**Hardware note:** Many laptop WiFi chips (including some Intel adapters) do **not** support monitor mode or do so poorly. For reliable client counting, use a USB WiFi adapter that supports monitor mode (e.g. Atheros AR9271, Ralink RT3070).
 
 ## Display Columns
 
@@ -176,6 +179,16 @@ The codebase has been reviewed by DevSecOps and Red Team agents:
 - **Credentials safety** -- Credentials file permissions are checked; warns if world-readable. Passphrases are never displayed in the TUI.
 - **Input validation** -- BSSID format (MAC regex) and channel range (1-196) validated via `is_valid_bssid()` and `is_valid_channel()`.
 - **CI/CD pipeline** -- GitHub Actions workflow runs pytest (3.9 + 3.12 matrix), ruff, mypy, and pip-audit on every push and PR.
+
+## Troubleshooting (Monitor Mode)
+
+If monitor mode shows "client counts enabled" but no networks or client counts appear:
+
+1. **Check the log file** — Inspect `/tmp/wifi_monitor_nitro5_airodump.log` for airodump-ng errors. If airodump exits immediately, the log will show the exit code and command used.
+2. **Check monitor mode setup** — Inspect `/tmp/wifi_monitor_nitro5_monitor.log` for failures during `ip`/`iw` commands (e.g. "device does not support monitor mode").
+3. **Verify interface type** — Run `iw dev <interface> info` and ensure `type monitor` is shown. Some drivers report success for `iw ... set type monitor` but do not actually support packet capture.
+4. **Ensure aircrack-ng is installed** — `sudo apt install aircrack-ng` (or equivalent). airodump-ng must be on your PATH.
+5. **Try a USB WiFi adapter** — Built-in laptop WiFi often lacks monitor mode support. USB adapters with Atheros AR9271 or Ralink RT3070 chips are known to work.
 
 ## Future Plans
 
