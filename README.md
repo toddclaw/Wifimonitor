@@ -162,6 +162,7 @@ The codebase has been reviewed by DevSecOps and Red Team agents:
 ### Refactoring
 
 - **Package layout** (3 pts) -- Migrate to `src/wifimonitor/` package structure with `pyproject.toml`, `__version__`, and console entry point. Unifies the dual requirements files into a single dependency spec.
+- **Test coverage for wifi_monitor_nitro5.py** (3 pts) -- Raise coverage from 79% to 90%+. Major gap is `main()` (~70 lines untested). Requires extracting the TUI loop body into a testable function, adding seams for `Console`/`Live`, and covering `DnsTracker._reader_loop` threading edge cases and `load_credentials` error paths.
 - **Scanner and Renderer protocols** (3 pts) -- Define `ScannerProtocol` and `RendererProtocol` abstractions. Split `wifi_monitor_nitro5.py` into `NmcliScanner`, `RichRenderer`, and a thin `MonitorApp` coordinator (Single Responsibility).
 - **UX agent** (3 pts) -- Create a UX agent that evaluates and suggests improvements for both the CLI/TUI (Rich tables, layout, color, information density) and future GUI surfaces. Integrate into the manager pipeline alongside the existing review agents.
 
