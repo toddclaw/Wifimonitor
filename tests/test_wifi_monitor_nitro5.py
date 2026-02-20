@@ -1054,8 +1054,8 @@ class TestAirodumpScanner:
         mock_proc = MagicMock()
         mock_proc.poll.return_value = None
         fake.set_popen_result(mock_proc)
-        # 2 for _interface_supports_monitor (iw dev info, iw phy phy0 info)
-        # + nmcli + 3 ip/iw monitor setup + 1 iw dev info verify
+        # Virtual monitor path: 2 for _interface_supports_monitor, 1 for rfkill unblock,
+        # 3 for _enable_monitor_mode_virtual, 1 for stop (iw dev mon0 del)
         success = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
         iw_dev_info = subprocess.CompletedProcess(
             args=[], returncode=0, stdout="Interface wlan0\n  wiphy 0\n", stderr=""
@@ -1064,12 +1064,11 @@ class TestAirodumpScanner:
             args=[], returncode=0,
             stdout="Supported interface modes:\n * managed\n * monitor\n", stderr=""
         )
-        iw_verify = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout="Interface wlan0\n  type monitor\n", stderr=""
-        )
         fake.set_run_results(
             iw_dev_info, iw_phy_info,
-            success, success, success, success, iw_verify,
+            success,  # rfkill unblock wifi
+            iw_dev_info, success, success,  # virtual: iw dev info, iw phy interface add, ip up
+            success,  # stop: iw dev mon0 del
         )
         scanner = AirodumpScanner(interface="wlan0", runner=fake)
         with (
@@ -1100,12 +1099,11 @@ class TestAirodumpScanner:
             args=[], returncode=0,
             stdout="Supported interface modes:\n * managed\n * monitor\n", stderr=""
         )
-        iw_verify = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout="Interface wlan0\n  type monitor\n", stderr=""
-        )
         fake.set_run_results(
             iw_dev_info, iw_phy_info,
-            success, success, success, success, iw_verify,
+            success,  # rfkill unblock wifi
+            iw_dev_info, success, success,  # virtual: iw dev info, iw phy interface add, ip up
+            success,  # stop: iw dev mon0 del
         )
         scanner = AirodumpScanner(interface="wlan0", runner=fake)
         with (
@@ -1115,6 +1113,76 @@ class TestAirodumpScanner:
             ok, reason = scanner.start()
         assert ok is False
         assert reason == "airodump_exit"
+
+    def test_start_returns_false_when_nmcli_managed_no_fails(self):
+        """start() returns (False, 'monitor_mode') when nmcli device set managed no fails."""
+        fake = _FakeRunner()
+        success = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        nmcli_fail = subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="Error: Device not found"
+        )
+        iw_phy_add_fail = subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="not supported"
+        )
+        iw_dev_info = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="Interface wlan0\n  wiphy 0\n", stderr=""
+        )
+        iw_phy_info = subprocess.CompletedProcess(
+            args=[], returncode=0,
+            stdout="Supported interface modes:\n * managed\n * monitor\n", stderr=""
+        )
+        fake.set_run_results(
+            iw_dev_info, iw_phy_info,
+            success,  # rfkill unblock wifi
+            iw_dev_info, iw_phy_add_fail,  # virtual fails at iw phy interface add
+            success,  # nmcli disconnect
+            nmcli_fail,  # nmcli managed no — fails
+        )
+        scanner = AirodumpScanner(interface="wlan0", runner=fake)
+        with patch("wifi_monitor_nitro5.time.sleep"):
+            ok, reason = scanner.start()
+        assert ok is False
+        assert reason == "monitor_mode"
+
+    def test_start_uses_set_type_fallback_when_virtual_fails(self):
+        """start() falls back to set-type when virtual monitor interface creation fails."""
+        fake = _FakeRunner()
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        fake.set_popen_result(mock_proc)
+        success = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        iw_dev_info = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="Interface wlan0\n  wiphy 0\n", stderr=""
+        )
+        iw_phy_info = subprocess.CompletedProcess(
+            args=[], returncode=0,
+            stdout="Supported interface modes:\n * managed\n * monitor\n", stderr=""
+        )
+        iw_phy_add_fail = subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="not supported"
+        )
+        iw_verify = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="Interface wlan0\n  type monitor\n", stderr=""
+        )
+        fake.set_run_results(
+            iw_dev_info, iw_phy_info,
+            success,  # rfkill unblock wifi
+            iw_dev_info, iw_phy_add_fail,  # virtual fails at iw phy interface add
+            success, success,  # nmcli disconnect, nmcli managed no
+            success, success, success,  # ip down, iw set type, ip up
+            iw_verify,
+            success, success, success, success,  # stop: ip down, iw set managed, ip up, nmcli
+        )
+        scanner = AirodumpScanner(interface="wlan0", runner=fake)
+        with (
+            patch("wifi_monitor_nitro5.os.geteuid", return_value=0),
+            patch("wifi_monitor_nitro5.time.sleep"),
+        ):
+            ok, _ = scanner.start()
+        assert ok is True
+        assert not scanner._monitor_is_virtual
+        assert scanner._monitor_interface == "wlan0"
+        scanner.stop()
 
 
 # ---------------------------------------------------------------------------

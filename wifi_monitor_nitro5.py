@@ -324,23 +324,24 @@ def _interface_supports_monitor(interface: str, runner: CommandRunner | None = N
         return True  # Allow attempt
 
 
-def _set_nm_managed(interface: str, managed: bool, runner: CommandRunner | None = None) -> None:
+def _set_nm_managed(interface: str, managed: bool, runner: CommandRunner | None = None) -> bool:
     """Tell NetworkManager to manage or unmanage the interface.
 
     Prevents NetworkManager from reclaiming the interface during monitor mode.
-    Ignores failures (e.g. nmcli not installed).
+    Returns True if nmcli succeeded, False otherwise.
     """
     runner = runner or _DEFAULT_RUNNER
     env = _minimal_env()
     try:
-        runner.run(
+        result = runner.run(
             ["nmcli", "device", "set", interface, "managed", "yes" if managed else "no"],
             capture_output=True,
             timeout=5,
             env=env,
         )
+        return result.returncode == 0
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        pass
+        return False
 
 
 def _enable_monitor_mode(interface: str, runner: CommandRunner | None = None) -> bool:
@@ -352,15 +353,35 @@ def _enable_monitor_mode(interface: str, runner: CommandRunner | None = None) ->
     """
     runner = runner or _DEFAULT_RUNNER
     env = _minimal_env()
-    _set_nm_managed(interface, False, runner)
+    try:
+        runner.run(
+            ["nmcli", "device", "disconnect", interface],
+            capture_output=True,
+            timeout=5,
+            env=env,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
+    if not _set_nm_managed(interface, False, runner):
+        _log_monitor_failure(
+            f"nmcli device set {interface} managed no failed — NetworkManager may reclaim the interface",
+            None,
+            None,
+            None,
+        )
+        return False
+    time.sleep(0.5)
     cmds = [
         ["sudo", "ip", "link", "set", interface, "down"],
         ["sudo", "iw", "dev", interface, "set", "type", "monitor"],
         ["sudo", "ip", "link", "set", interface, "up"],
     ]
+    iw_set_type_returncode: int | None = None
     try:
         for cmd in cmds:
             result = runner.run(cmd, capture_output=True, timeout=10, env=env)
+            if ["sudo", "iw", "dev", interface, "set", "type", "monitor"] == cmd:
+                iw_set_type_returncode = result.returncode
             if result.returncode != 0:
                 _log_monitor_failure(
                     f"Command failed: {' '.join(cmd)}",
@@ -369,7 +390,7 @@ def _enable_monitor_mode(interface: str, runner: CommandRunner | None = None) ->
                     result.stderr,
                 )
                 return False
-        if not _verify_monitor_mode(interface, runner):
+        if not _verify_monitor_mode(interface, runner, iw_set_type_returncode):
             return False
         return True
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
@@ -382,7 +403,11 @@ def _enable_monitor_mode(interface: str, runner: CommandRunner | None = None) ->
         return False
 
 
-def _verify_monitor_mode(interface: str, runner: CommandRunner | None = None) -> bool:
+def _verify_monitor_mode(
+    interface: str,
+    runner: CommandRunner | None = None,
+    iw_set_type_returncode: int | None = None,
+) -> bool:
     """Verify the interface is actually in monitor mode via iw dev info."""
     runner = runner or _DEFAULT_RUNNER
     env = _minimal_env()
@@ -403,12 +428,21 @@ def _verify_monitor_mode(interface: str, runner: CommandRunner | None = None) ->
             return False
         out = result.stdout if isinstance(result.stdout, str) else result.stdout.decode("utf-8", errors="replace")
         if "type monitor" not in out:
-            _log_monitor_failure(
-                f"Interface {interface} is not type monitor (iw output: {out!r})",
-                None,
-                None,
-                None,
+            hints: list[str] = []
+            if iw_set_type_returncode == 0:
+                hints.append(
+                    "Driver may not actually support monitor mode (common with Intel laptop WiFi). "
+                    "Try a USB adapter (Atheros AR9271, Ralink RT3070)."
+                )
+            hints.append(
+                f"For permanent unmanage: add unmanaged-devices=interface-name:{interface} "
+                f"to /etc/NetworkManager/conf.d/monitor.conf and reboot."
             )
+            msg = (
+                f"Interface {interface} is not type monitor (iw output: {out!r}). "
+                + " ".join(hints)
+            )
+            _log_monitor_failure(msg, None, None, None)
             return False
         return True
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
@@ -484,6 +518,78 @@ def _disable_monitor_mode(interface: str, runner: CommandRunner | None = None) -
     _set_nm_managed(interface, True, runner)
 
 
+def _enable_monitor_mode_virtual(
+    interface: str, runner: CommandRunner | None = None
+) -> str | None:
+    """Create a new virtual monitor interface via iw phy interface add.
+
+    Leaves the original interface in managed mode; avoids NetworkManager reclaim.
+    Returns the monitor interface name (e.g. 'mon0') on success, None on failure.
+    """
+    runner = runner or _DEFAULT_RUNNER
+    env = _minimal_env()
+    mon_name = "mon0"
+    try:
+        result = runner.run(
+            ["iw", "dev", interface, "info"],
+            capture_output=True,
+            timeout=5,
+            env=env,
+        )
+        if result.returncode != 0:
+            return None
+        out = result.stdout if isinstance(result.stdout, str) else result.stdout.decode("utf-8", errors="replace")
+        match = re.search(r"wiphy\s+(\d+)", out)
+        if not match:
+            return None
+        wiphy = match.group(1)
+        result = runner.run(
+            ["sudo", "iw", "phy", f"phy{wiphy}", "interface", "add", mon_name, "type", "monitor"],
+            capture_output=True,
+            timeout=10,
+            env=env,
+        )
+        if result.returncode != 0:
+            return None
+        result = runner.run(
+            ["sudo", "ip", "link", "set", mon_name, "up"],
+            capture_output=True,
+            timeout=10,
+            env=env,
+        )
+        if result.returncode != 0:
+            try:
+                runner.run(
+                    ["sudo", "iw", "dev", mon_name, "del"],
+                    capture_output=True,
+                    timeout=5,
+                    env=env,
+                )
+            except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+                pass
+            return None
+        return mon_name
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return None
+
+
+def _disable_monitor_mode_virtual(
+    mon_interface: str, runner: CommandRunner | None = None
+) -> None:
+    """Remove a virtual monitor interface created by _enable_monitor_mode_virtual."""
+    runner = runner or _DEFAULT_RUNNER
+    env = _minimal_env()
+    try:
+        runner.run(
+            ["sudo", "iw", "dev", mon_interface, "del"],
+            capture_output=True,
+            timeout=10,
+            env=env,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
+
+
 class AirodumpScanner:
     """Manage an airodump-ng process and parse its CSV for client counts.
 
@@ -504,6 +610,8 @@ class AirodumpScanner:
         self._runner = runner or _DEFAULT_RUNNER
         self._proc: subprocess.Popen[bytes] | None = None
         self._monitor_enabled = False
+        self._monitor_interface = interface
+        self._monitor_is_virtual = False
         self._debug = debug
         self._stderr_file: io.TextIOWrapper | None = None
         self._last_cmd: list[str] = []
@@ -511,6 +619,9 @@ class AirodumpScanner:
 
     def start(self) -> tuple[bool, str | None]:
         """Enable monitor mode and start airodump-ng.
+
+        Tries virtual monitor interface first (iw phy interface add); falls back
+        to converting the existing interface (iw dev set type monitor).
 
         Returns:
             (True, None) if successful.
@@ -520,9 +631,26 @@ class AirodumpScanner:
         """
         if not _interface_supports_monitor(self.interface, self._runner):
             return False, "monitor_unsupported"
-        if not _enable_monitor_mode(self.interface, self._runner):
-            return False, "monitor_mode"
-        self._monitor_enabled = True
+        try:
+            self._runner.run(
+                ["rfkill", "unblock", "wifi"],
+                capture_output=True,
+                timeout=5,
+                env=_minimal_env(),
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            pass
+        mon_iface = _enable_monitor_mode_virtual(self.interface, self._runner)
+        if mon_iface is not None:
+            self._monitor_interface = mon_iface
+            self._monitor_is_virtual = True
+            self._monitor_enabled = True
+        else:
+            if not _enable_monitor_mode(self.interface, self._runner):
+                return False, "monitor_mode"
+            self._monitor_interface = self.interface
+            self._monitor_is_virtual = False
+            self._monitor_enabled = True
         self._cleanup_old_files()
         env = _minimal_env()
         if os.geteuid() == 0:
@@ -531,7 +659,7 @@ class AirodumpScanner:
             airodump_cmd = ("sudo", "airodump-ng")
         cmd = [
             *airodump_cmd,
-            self.interface,
+            self._monitor_interface,
             "--band", "abg",
             "--write", self.prefix,
             "--output-format", "csv",
@@ -591,7 +719,10 @@ class AirodumpScanner:
                 pass
             self._stderr_file = None
         if self._monitor_enabled:
-            _disable_monitor_mode(self.interface, self._runner)
+            if self._monitor_is_virtual:
+                _disable_monitor_mode_virtual(self._monitor_interface, self._runner)
+            else:
+                _disable_monitor_mode(self._monitor_interface, self._runner)
             self._monitor_enabled = False
         self._cleanup_old_files()
 

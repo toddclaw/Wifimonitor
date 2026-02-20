@@ -186,9 +186,13 @@ If monitor mode shows "client counts enabled" but no networks or client counts a
 
 1. **Check the log file** — Inspect `/tmp/wifi_monitor_nitro5_airodump.log` for airodump-ng errors. If airodump exits immediately, the log will show the exit code and command used.
 2. **Check monitor mode setup** — Inspect `/tmp/wifi_monitor_nitro5_monitor.log` for failures during `ip`/`iw` commands (e.g. "device does not support monitor mode").
-3. **Verify interface type** — Run `iw dev <interface> info` and ensure `type monitor` is shown. Some drivers report success for `iw ... set type monitor` but do not actually support packet capture.
-4. **Ensure aircrack-ng is installed** — `sudo apt install aircrack-ng` (or equivalent). airodump-ng must be on your PATH.
-5. **Try a USB WiFi adapter** — Built-in laptop WiFi often lacks monitor mode support. USB adapters with Atheros AR9271 or Ralink RT3070 chips are known to work.
+3. **Interface stays managed** — If the log shows "Interface X is not type monitor", NetworkManager may be reclaiming the interface or the driver may not actually support monitor mode. Options:
+   - **Permanent unmanage:** Add `unmanaged-devices=interface-name:IFACE` to `/etc/NetworkManager/conf.d/monitor.conf` (create the file if needed), then reboot.
+   - **Driver limitation:** Intel laptop WiFi often reports success but does not support monitor mode. Try a USB adapter (Atheros AR9271, Ralink RT3070).
+4. **rfkill soft-block** — If WiFi is soft-blocked (`rfkill list` shows "Soft blocked: yes"), run `rfkill unblock wifi` before starting. The monitor attempts this automatically but it may fail without root.
+5. **Verify interface type** — Run `iw dev <interface> info` and ensure `type monitor` is shown. Some drivers report success for `iw ... set type monitor` but do not actually support packet capture.
+6. **Ensure aircrack-ng is installed** — `sudo apt install aircrack-ng` (or equivalent). airodump-ng must be on your PATH.
+7. **Try a USB WiFi adapter** — Built-in laptop WiFi often lacks monitor mode support. USB adapters with Atheros AR9271 or Ralink RT3070 chips are known to work.
 
 ## Future Plans
 
