@@ -712,6 +712,7 @@ class AirodumpScanner:
             "--write", self.prefix,
             "--output-format", "csv",
             "--write-interval", str(AIRODUMP_WRITE_INTERVAL),
+            "--hoptime", "500",
             "--background", "1",
         ]
         stderr_dest: int | io.TextIOWrapper = subprocess.DEVNULL
@@ -739,9 +740,11 @@ class AirodumpScanner:
                 cmd,
                 stdout=subprocess.DEVNULL,
                 stderr=stderr_dest,
+                stdin=subprocess.DEVNULL,
                 env=env,
                 cwd="/tmp",
                 text=False,
+                start_new_session=True,
             )
         except (FileNotFoundError, OSError):
             self.stop()

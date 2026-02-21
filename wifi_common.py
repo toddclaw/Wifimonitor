@@ -82,9 +82,11 @@ class CommandRunner(Protocol):
         *,
         stdout: int | None = None,
         stderr: int | None | IO[Any] = None,
+        stdin: int | None = None,
         text: bool = True,
         env: dict[str, str] | None = None,
         cwd: str | None = None,
+        start_new_session: bool = False,
     ) -> subprocess.Popen[Any]:
         """Launch *cmd* asynchronously and return a Popen handle."""
         ...  # pragma: no cover
@@ -117,18 +119,22 @@ class SubprocessRunner:
         *,
         stdout: int | None = None,
         stderr: int | None | IO[Any] = None,
+        stdin: int | None = None,
         text: bool = True,
         env: dict[str, str] | None = None,
         cwd: str | None = None,
+        start_new_session: bool = False,
     ) -> subprocess.Popen[Any]:
         """Launch *cmd* via ``subprocess.Popen``."""
         return subprocess.Popen(
             cmd,
             stdout=stdout,
             stderr=stderr,
+            stdin=stdin,
             text=text,
             env=env,
             cwd=cwd,
+            start_new_session=start_new_session,
         )
 
 

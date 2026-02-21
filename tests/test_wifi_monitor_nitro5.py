@@ -1078,7 +1078,7 @@ class TestAirodumpScanner:
         assert other.clients == 0  # Not in airodump CSV
 
     def test_start_passes_cwd_and_background_to_airodump(self):
-        """start() spawns airodump with cwd=/tmp and --background 1."""
+        """start() spawns airodump with cwd=/tmp, --background 1, stdin=DEVNULL, start_new_session=True, --hoptime 500."""
         fake = _FakeRunner()
         mock_proc = MagicMock()
         mock_proc.poll.return_value = None
@@ -1110,9 +1110,47 @@ class TestAirodumpScanner:
         assert len(fake.popen_calls) == 1
         cmd, kwargs = fake.popen_calls[0]
         assert kwargs.get("cwd") == "/tmp"
+        assert kwargs.get("start_new_session") is True
+        assert kwargs.get("stdin") == subprocess.DEVNULL
         assert "--background" in cmd
         idx = cmd.index("--background")
         assert cmd[idx + 1] == "1"
+        assert "--hoptime" in cmd
+        ht_idx = cmd.index("--hoptime")
+        assert cmd[ht_idx + 1] == "500"
+        scanner.stop()
+
+    def test_start_airodump_detached_from_terminal(self):
+        """start() passes start_new_session=True to popen so airodump cannot open /dev/tty."""
+        fake = _FakeRunner()
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        fake.set_popen_result(mock_proc)
+        success = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        iw_dev_info = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="Interface wlan0\n  wiphy 0\n", stderr=""
+        )
+        iw_phy_info = subprocess.CompletedProcess(
+            args=[], returncode=0,
+            stdout="Supported interface modes:\n * managed\n * monitor\n", stderr=""
+        )
+        fake.set_run_results(
+            iw_dev_info, iw_phy_info,
+            success, success,  # pre-scan: nmcli rescan + list
+            success,           # rfkill unblock wifi
+            iw_dev_info, success, success,  # virtual: iw dev info, iw phy add, ip up
+            success,           # stop: iw dev mon0 del
+        )
+        scanner = AirodumpScanner(interface="wlan0", runner=fake)
+        with (
+            patch("wifi_monitor_nitro5.os.geteuid", return_value=0),
+            patch("wifi_monitor_nitro5.time.sleep"),
+        ):
+            ok, _ = scanner.start()
+        assert ok is True
+        _, kwargs = fake.popen_calls[0]
+        assert kwargs.get("start_new_session") is True
+        assert kwargs.get("stdin") == subprocess.DEVNULL
         scanner.stop()
 
     def test_start_returns_false_when_airodump_exits_immediately(self):
@@ -1263,6 +1301,9 @@ class TestAirodumpScanner:
         assert "6" in channel_val
         assert "36" in channel_val
         assert "--band" not in cmd
+        assert "--hoptime" in cmd
+        ht_idx = cmd.index("--hoptime")
+        assert cmd[ht_idx + 1] == "500"
         scanner.stop()
 
     def test_start_falls_back_to_band_when_pre_scan_empty(self):
@@ -1299,6 +1340,9 @@ class TestAirodumpScanner:
         band_idx = cmd.index("--band")
         assert cmd[band_idx + 1] == "abg"
         assert "-c" not in cmd
+        assert "--hoptime" in cmd
+        ht_idx = cmd.index("--hoptime")
+        assert cmd[ht_idx + 1] == "500"
         scanner.stop()
 
 
