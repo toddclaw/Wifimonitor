@@ -231,16 +231,16 @@ If monitor mode shows "client counts enabled" but no networks or client counts a
 ### Refactoring
 
 - **Package layout** (3 pts) -- Migrate to `src/wifimonitor/` package structure with `pyproject.toml`, `__version__`, and console entry point. Unifies the dual requirements files into a single dependency spec.
-- **Test coverage for wifi_monitor_nitro5.py** (3 pts) -- Raise coverage from 79% to 90%+. Major gap is `main()` (~70 lines untested). Requires extracting the TUI loop body into a testable function, adding seams for `Console`/`Live`, and covering `DnsTracker._reader_loop` threading edge cases and `load_credentials` error paths.
+- ~~**Test coverage for wifi_monitor_nitro5.py** (3 pts)~~ -- **Complete.** Coverage raised to 98% (345 tests).
 - **Scanner and Renderer protocols** (3 pts) -- Define `ScannerProtocol` and `RendererProtocol` abstractions. Split `wifi_monitor_nitro5.py` into `NmcliScanner`, `RichRenderer`, and a thin `MonitorApp` coordinator (Single Responsibility).
 - **UX agent** (3 pts) -- Create a UX agent that evaluates and suggests improvements for both the CLI/TUI (Rich tables, layout, color, information density) and future GUI surfaces. Integrate into the manager pipeline alongside the existing review agents.
-- **Debugging capability** -- Add debug output throughout the code base to enable debugging and verbose output to verify capabilities are working as expected and to debug when things are not working.
+- ~~**Debugging capability**~~ -- **Complete.** `--debug` flag writes Python debug output to `/tmp/wifi_monitor_nitro5_debug.log`; `_dump_startup_config` logs all settings at startup; strategic debug points throughout `AirodumpScanner`.
 
 ### Features
 
-- **Auto-detect platform and wifi devices** -- Enable running just `wifi_monitor.py` and auto detect OS and WiFi devices.
-- **Display RF band for each BSSID** -- Display in output what RF band each BSSID is currently operating in.
-- **Detect number of clients on each BSSID** -- accurately detect the number of clients on each BSSID.
+- **Auto-detect platform and wifi devices** (5 pts) -- Enable running just `wifi_monitor.py` and auto detect OS and WiFi devices. Enumerate interfaces via `/sys/class/net/` or `nmcli`, detect Raspberry Pi via `/proc/device-tree/model`, pick the right scanner automatically.
+- **Display RF band for each BSSID** (3 pts) -- Display in output what RF band each BSSID is currently operating in. Add `FREQ` to the nmcli query, map frequency to band (2.4 GHz / 5 GHz / 6 GHz), add a `band` field to the `Network` dataclass, and render in a new table column.
+- **Detect number of clients on each BSSID** (3 pts) -- Per-BSSID client counts already work via `--monitor` on Atheros/Realtek USB adapters. Remaining work: improve UX around Intel WiFi limitation (clear in-TUI message when monitor mode yields zero clients), and add a combined mode that uses `--arp` for the connected BSSID and `--monitor` for others when a compatible adapter is present.
 - **Deauth attack detection** (8 pts) -- Detect deauthentication/disassociation frames targeting your own network and alert in the TUI. Requires monitor mode capture and 802.11 management frame parsing.
 - **Rogue AP detection** (5 pts) -- Identify rogue access points impersonating known SSIDs with mismatched BSSIDs or unexpected channels. Works with existing nmcli scan data; needs a known-good baseline file.
 - **Unusual client behavior monitoring** (13 pts) -- Monitor for anomalous client activity on networks you own (e.g. rapid association/disassociation, probe floods). Requires monitor mode and rate-based anomaly heuristics.
