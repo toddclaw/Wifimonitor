@@ -270,6 +270,37 @@ class TestParseAirodumpCsv:
         assert coffee.clients == 1
         assert sum(client_counts.values()) == 3
 
+    def test_client_counts_with_multiple_blank_lines_between_sections(self):
+        """CSV with 3+ blank lines between AP and Station sections still parses clients.
+
+        Some airodump-ng versions write extra blank lines; split('\\n\\n') would put
+        the Station section in sections[2] instead of sections[1], silently zeroing counts.
+        """
+        # Build a variant of SAMPLE_AIRODUMP_CSV_NN with TWO blank lines (\\n\\n\\n\\n)
+        # between the AP section and the Station section.
+        ap_section = (
+            "BSSID, First time seen, Last time seen, channel, Speed,"
+            " Privacy, Cipher, Authentication, Power, # beacons, # IV,"
+            " LAN IP, ID-length, ESSID, Key\n"
+            "AA:BB:CC:DD:EE:01, 2025-01-01 00:00:00, 2025-01-01 00:01:00,"
+            "  6, 54, WPA2 CCMP PSK,CCMP,PSK, -55, 100, 0,"
+            "  0.  0.  0.  0, 10, HomeNetwork,\n"
+        )
+        station_section = (
+            "Station MAC, First time seen, Last time seen, Power, # packets,"
+            " BSSID, Probed ESSIDs\n"
+            "11:22:33:44:55:01, 2025-01-01 00:00:00, 2025-01-01 00:01:00,"
+            " -60, 100, AA:BB:CC:DD:EE:01, HomeNetwork\n"
+            "11:22:33:44:55:02, 2025-01-01 00:00:00, 2025-01-01 00:01:00,"
+            " -65, 50, AA:BB:CC:DD:EE:01, HomeNetwork\n"
+        )
+        # Four consecutive newlines = two blank lines between sections
+        double_blank = ap_section + "\n\n\n" + station_section
+        networks, client_counts = parse_airodump_csv(double_blank)
+        home = [n for n in networks if n.ssid == "HomeNetwork"][0]
+        assert home.clients == 2
+        assert client_counts.get("aa:bb:cc:dd:ee:01") == 2
+
 
 # ---------------------------------------------------------------------------
 # COLOR_TO_RICH — unified color mapping

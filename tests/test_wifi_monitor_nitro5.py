@@ -1083,8 +1083,8 @@ class TestAirodumpScanner:
         mock_proc = MagicMock()
         mock_proc.poll.return_value = None
         fake.set_popen_result(mock_proc)
-        # Virtual monitor path: 2 for _interface_supports_monitor, 1 for rfkill unblock,
-        # 3 for _enable_monitor_mode_virtual, 1 for stop (iw dev mon0 del)
+        # Virtual monitor path: 2 for _interface_supports_monitor, 2 for pre-scan,
+        # 1 for rfkill unblock, 3 for _enable_monitor_mode_virtual, 1 for stop (iw dev mon0 del)
         success = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
         iw_dev_info = subprocess.CompletedProcess(
             args=[], returncode=0, stdout="Interface wlan0\n  wiphy 0\n", stderr=""
@@ -1095,6 +1095,7 @@ class TestAirodumpScanner:
         )
         fake.set_run_results(
             iw_dev_info, iw_phy_info,
+            success, success,  # pre-scan: nmcli rescan + list (returns empty channel list)
             success,  # rfkill unblock wifi
             iw_dev_info, success, success,  # virtual: iw dev info, iw phy interface add, ip up
             success,  # stop: iw dev mon0 del
@@ -1130,6 +1131,7 @@ class TestAirodumpScanner:
         )
         fake.set_run_results(
             iw_dev_info, iw_phy_info,
+            success, success,  # pre-scan: nmcli rescan + list
             success,  # rfkill unblock wifi
             iw_dev_info, success, success,  # virtual: iw dev info, iw phy interface add, ip up
             success,  # stop: iw dev mon0 del
@@ -1162,6 +1164,7 @@ class TestAirodumpScanner:
         )
         fake.set_run_results(
             iw_dev_info, iw_phy_info,
+            success, success,  # pre-scan: nmcli rescan + list
             success,  # rfkill unblock wifi
             iw_dev_info, iw_phy_add_fail,  # virtual fails at iw phy interface add
             success,  # nmcli disconnect
@@ -1195,6 +1198,7 @@ class TestAirodumpScanner:
         )
         fake.set_run_results(
             iw_dev_info, iw_phy_info,
+            success, success,  # pre-scan: nmcli rescan + list
             success,  # rfkill unblock wifi
             iw_dev_info, iw_phy_add_fail,  # virtual fails at iw phy interface add
             success, success,  # nmcli disconnect, nmcli managed no
@@ -1211,6 +1215,90 @@ class TestAirodumpScanner:
         assert ok is True
         assert not scanner._monitor_is_virtual
         assert scanner._monitor_interface == "wlan0"
+        scanner.stop()
+
+    def test_start_uses_channel_list_from_pre_scan(self):
+        """start() passes -c <channels> to airodump when pre-scan discovers APs."""
+        fake = _FakeRunner()
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        fake.set_popen_result(mock_proc)
+        success = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        iw_dev_info = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="Interface wlan0\n  wiphy 0\n", stderr=""
+        )
+        iw_phy_info = subprocess.CompletedProcess(
+            args=[], returncode=0,
+            stdout="Supported interface modes:\n * managed\n * monitor\n", stderr=""
+        )
+        # Pre-scan list returns two APs on channels 6 and 36
+        nmcli_list = subprocess.CompletedProcess(
+            args=[], returncode=0,
+            stdout=(
+                r"AA\:BB\:CC\:DD\:EE\:01:HomeNet:6:85:WPA2" + "\n"
+                r"AA\:BB\:CC\:DD\:EE\:02:Office:36:70:WPA2"
+            ),
+            stderr="",
+        )
+        fake.set_run_results(
+            iw_dev_info, iw_phy_info,
+            success,       # pre-scan: nmcli rescan
+            nmcli_list,    # pre-scan: nmcli list → channels 6, 36
+            success,       # rfkill unblock wifi
+            iw_dev_info, success, success,  # virtual: iw dev info, iw phy add, ip up
+            success,       # stop: iw dev mon0 del
+        )
+        scanner = AirodumpScanner(interface="wlan0", runner=fake)
+        with (
+            patch("wifi_monitor_nitro5.os.geteuid", return_value=0),
+            patch("wifi_monitor_nitro5.time.sleep"),
+        ):
+            ok, _ = scanner.start()
+        assert ok is True
+        assert scanner._channels == [6, 36]
+        cmd, _ = fake.popen_calls[0]
+        assert "-c" in cmd
+        c_idx = cmd.index("-c")
+        channel_val = cmd[c_idx + 1]
+        assert "6" in channel_val
+        assert "36" in channel_val
+        assert "--band" not in cmd
+        scanner.stop()
+
+    def test_start_falls_back_to_band_when_pre_scan_empty(self):
+        """start() uses --band abg when pre-scan returns no networks."""
+        fake = _FakeRunner()
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        fake.set_popen_result(mock_proc)
+        success = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        iw_dev_info = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="Interface wlan0\n  wiphy 0\n", stderr=""
+        )
+        iw_phy_info = subprocess.CompletedProcess(
+            args=[], returncode=0,
+            stdout="Supported interface modes:\n * managed\n * monitor\n", stderr=""
+        )
+        fake.set_run_results(
+            iw_dev_info, iw_phy_info,
+            success, success,  # pre-scan: rescan + empty list → no channels
+            success,           # rfkill unblock wifi
+            iw_dev_info, success, success,  # virtual: iw dev info, iw phy add, ip up
+            success,           # stop: iw dev mon0 del
+        )
+        scanner = AirodumpScanner(interface="wlan0", runner=fake)
+        with (
+            patch("wifi_monitor_nitro5.os.geteuid", return_value=0),
+            patch("wifi_monitor_nitro5.time.sleep"),
+        ):
+            ok, _ = scanner.start()
+        assert ok is True
+        assert scanner._channels == []
+        cmd, _ = fake.popen_calls[0]
+        assert "--band" in cmd
+        band_idx = cmd.index("--band")
+        assert cmd[band_idx + 1] == "abg"
+        assert "-c" not in cmd
         scanner.stop()
 
 

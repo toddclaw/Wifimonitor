@@ -220,7 +220,9 @@ def parse_airodump_csv(content: str) -> tuple[list[Network], dict[str, int]]:
     # Normalize line endings so we handle both \r\n\r\n and \n\n section separators
     # (airodump-ng on Linux typically uses \n)
     normalized = content.replace("\r\n", "\n").replace("\r", "\n")
-    sections = normalized.split("\n\n")
+    # Use re.split to handle airodump-ng versions that write 3+ blank lines between sections.
+    # split("\n\n") would put station data in sections[2] when 4 newlines appear (\n\n\n\n).
+    sections = re.split(r"\n{2,}", normalized)
 
     logger.debug("airodump CSV sections: %d", len(sections))
 

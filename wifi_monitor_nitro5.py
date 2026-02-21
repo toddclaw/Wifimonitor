@@ -618,6 +618,7 @@ class AirodumpScanner:
         self._stderr_file: io.TextIOWrapper | None = None
         self._last_cmd: list[str] = []
         self._exit_logged = False
+        self._channels: list[int] = []
 
     def start(self) -> tuple[bool, str | None]:
         """Enable monitor mode and start airodump-ng.
@@ -642,6 +643,21 @@ class AirodumpScanner:
             )
         if not supports_monitor:
             return False, "monitor_unsupported"
+
+        # Pre-scan while the interface is still in managed mode to discover which
+        # channels visible APs are on.  Passing these to airodump-ng via -c keeps it
+        # focused on those channels rather than hopping all 40+ channels with --band abg.
+        # Staying on the relevant channels dramatically increases the chance of capturing
+        # the data/management frames that reveal client associations.
+        _pre_networks = scan_wifi_nmcli(interface=self.interface, runner=self._runner)
+        self._channels = sorted(set(n.channel for n in _pre_networks if n.channel > 0))
+        if self._debug:
+            _LOGGER.debug(
+                "pre-scan: %d channel(s) discovered: %s",
+                len(self._channels),
+                self._channels,
+            )
+
         try:
             self._runner.run(
                 ["rfkill", "unblock", "wifi"],
@@ -683,10 +699,16 @@ class AirodumpScanner:
             airodump_cmd: tuple[str, ...] = ("airodump-ng",)
         else:
             airodump_cmd = ("sudo", "airodump-ng")
+        # Use discovered channels for targeted scanning; fall back to all bands if
+        # the pre-scan returned nothing (e.g. nmcli not available, root required).
+        if self._channels:
+            channel_arg = ["-c", ",".join(str(c) for c in self._channels)]
+        else:
+            channel_arg = ["--band", "abg"]
         cmd = [
             *airodump_cmd,
             self._monitor_interface,
-            "--band", "abg",
+            *channel_arg,
             "--write", self.prefix,
             "--output-format", "csv",
             "--write-interval", str(AIRODUMP_WRITE_INTERVAL),
