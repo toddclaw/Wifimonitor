@@ -13,16 +13,20 @@ Wifimonitor/
 ├── CLAUDE.md
 ├── README.md
 ├── WORK_IN_PROGRESS.md        # Feature blueprints and running commentary
-├── wifi_monitor_nitro5.py     # Laptop entry point (Rich TUI, nmcli)
-├── wifi_common.py             # Shared: Network dataclass, signal/color helpers,
+├── src/wifimonitor/
+│   ├── __init__.py            # Package metadata/version
+│   ├── __main__.py            # Supports: python -m wifimonitor
+│   ├── wifi_monitor_nitro5.py # Laptop entry point (Rich TUI, nmcli)
+│   └── wifi_common.py         # Shared: Network dataclass, signal/color helpers,
 │                              #         airodump-ng CSV parser (Pi, future)
-├── pyproject.toml             # Tool config (ruff, mypy)
+├── wifi_monitor.py            # Raspberry Pi entry point (legacy script)
+├── pyproject.toml             # Packaging + tool config (ruff, mypy)
 ├── requirements.txt           # Pi requirements
 ├── requirements-laptop.txt    # Laptop requirements (rich>=13.0,<15)
 ├── requirements-dev.txt       # Dev/CI tooling (pytest, ruff, mypy, pip-audit)
 ├── .github/workflows/ci.yml   # CI pipeline (test, lint, security)
 ├── tests/
-│   ├── test_wifi_monitor_nitro5.py   # 211 tests — parsing, rendering, scanning, ARP, connected indicator
+│   ├── test_wifi_monitor_nitro5.py   # 274 tests — parsing, rendering, scanning, credentials, DNS, ARP, monitor helpers, main()
 │   └── test_wifi_common.py           #  71 tests — helpers, airodump CSV, validation, colors, protocol
 ├── .claude/
 │   └── agents/
@@ -58,7 +62,7 @@ Wifimonitor/
 
 ## Language & Platform
 
-- **Language:** Python 3.9+ (enforced at runtime in `wifi_monitor_nitro5.py`)
+- **Language:** Python 3.9+ (enforced at runtime in `src/wifimonitor/wifi_monitor_nitro5.py`)
 - **Primary target:** Linux laptop (Acer Nitro 5), `nmcli` for scanning
 - **Future target:** Raspberry Pi, airodump-ng/monitor mode
 - **Display:** Rich terminal TUI (`rich` library)
@@ -102,14 +106,18 @@ Reference the agent at the start of a session to set its role:
 ## Test Commands
 
 ```bash
-# Run all 282 tests
-pytest tests/ -v
+# Install package and dev tooling
+python3 -m pip install -e .
+python3 -m pip install -r requirements-dev.txt
+
+# Run all tests
+python3 -m pytest tests/ -v
 
 # Run with coverage
-pytest tests/ -v --cov=. --cov-report=term-missing
+python3 -m pytest tests/ -v --cov=src/ --cov-report=term-missing
 
 # Linting
-ruff check wifi_common.py wifi_monitor_nitro5.py tests/
-mypy wifi_common.py wifi_monitor_nitro5.py
-pip-audit -r requirements-laptop.txt
+python3 -m ruff check src/ tests/
+python3 -m mypy src/
+python3 -m pip_audit -r requirements-laptop.txt
 ```

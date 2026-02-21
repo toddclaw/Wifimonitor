@@ -25,38 +25,47 @@ Currently runs on **Linux laptops** using `nmcli` (NetworkManager). Raspberry Pi
 ## Quick Start
 
 ```bash
-# Install dependencies
-pip install -r requirements-laptop.txt
+# Install as an editable package (recommended)
+python3 -m pip install -e .
+
+# Optional: install dev tooling (pytest, ruff, mypy, pip-audit)
+python3 -m pip install -r requirements-dev.txt
 
 # Run with default interface
-python wifi_monitor_nitro5.py
+wifimonitor
 
 # Specify a wireless interface
-python wifi_monitor_nitro5.py -i wlan1
+wifimonitor -i wlan1
 
 # Load a credentials file (shows Key column for known networks)
-python wifi_monitor_nitro5.py -c credentials.csv
+wifimonitor -c credentials.csv
 
 # Auto-connect to the strongest known network
-python wifi_monitor_nitro5.py -c credentials.csv --connect
+wifimonitor -c credentials.csv --connect
 
 # Capture and display DNS queries (requires sudo)
-sudo python wifi_monitor_nitro5.py --dns
+sudo wifimonitor --dns
 
 # Combine all features
-sudo python wifi_monitor_nitro5.py --dns -c credentials.csv --connect
+sudo wifimonitor --dns -c credentials.csv --connect
 
 # Count clients on connected network via ARP (works on Intel WiFi)
-sudo python wifi_monitor_nitro5.py --arp
+sudo wifimonitor --arp
 
 # ARP client counts + DNS capture
-sudo python wifi_monitor_nitro5.py --arp --dns
+sudo wifimonitor --arp --dns
 
 # Run with sudo to force fresh rescans
-sudo python wifi_monitor_nitro5.py
+sudo wifimonitor
 ```
 
 Press `Ctrl+C` to exit cleanly.
+
+If `wifimonitor` is not on your `PATH`, run the module form instead:
+
+```bash
+python3 -m wifimonitor --help
+```
 
 ## Credentials File
 
@@ -90,10 +99,10 @@ The `--dns` flag enables real-time DNS query capture using `tcpdump`. A second t
 
 ```bash
 # Start with DNS capture (requires root for tcpdump)
-sudo python wifi_monitor_nitro5.py --dns
+sudo wifimonitor --dns
 
 # DNS capture with credentials and auto-connect
-sudo python wifi_monitor_nitro5.py --dns -c credentials.csv --connect
+sudo wifimonitor --dns -c credentials.csv --connect
 ```
 
 - Requires root privileges (tcpdump needs raw socket access).
@@ -108,10 +117,10 @@ The `--arp` flag counts active devices on the network you are currently connecte
 
 ```bash
 # ARP client detection (requires root for raw ARP)
-sudo python wifi_monitor_nitro5.py --arp
+sudo wifimonitor --arp
 
 # With a specific interface
-sudo python wifi_monitor_nitro5.py --arp -i wlan0
+sudo wifimonitor --arp -i wlan0
 ```
 
 - Uses `arp-scan --localnet` when available; falls back to `nmap -sn` automatically.
@@ -128,10 +137,10 @@ The `--monitor` flag enables client counting per access point using airodump-ng 
 
 ```bash
 # Monitor mode with default interface (wlan0)
-sudo python wifi_monitor_nitro5.py --monitor
+sudo wifimonitor --monitor
 
 # Monitor mode on a specific interface (e.g. USB WiFi dongle)
-sudo python wifi_monitor_nitro5.py --monitor -i wlan1
+sudo wifimonitor --monitor -i wlan1
 ```
 
 - Requires root privileges and a WiFi interface that supports monitor mode.
@@ -164,10 +173,13 @@ sudo python wifi_monitor_nitro5.py --monitor -i wlan1
 
 ```
 Wifimonitor/
-├── wifi_monitor_nitro5.py     # Laptop entry point (Rich TUI, nmcli)
-├── wifi_common.py             # Shared: Network dataclass, signal/color helpers,
-│                              #         airodump-ng CSV parser (Pi, future)
-├── pyproject.toml             # Tool config (ruff, mypy)
+├── src/wifimonitor/
+│   ├── __init__.py            # Package version
+│   ├── __main__.py            # Supports: python -m wifimonitor
+│   ├── wifi_monitor_nitro5.py # Laptop entry point (Rich TUI, nmcli)
+│   └── wifi_common.py         # Shared types/helpers + airodump CSV parser
+├── wifi_monitor.py            # Raspberry Pi entry point (legacy script)
+├── pyproject.toml             # Packaging + tool config (ruff, mypy, pytest)
 ├── requirements-laptop.txt    # Laptop dependencies (rich>=13.0,<15)
 ├── requirements-dev.txt       # Dev/CI tooling (pytest, ruff, mypy, pip-audit)
 ├── requirements.txt           # Pi dependencies (future)
@@ -190,10 +202,10 @@ Wifimonitor/
 
 ```bash
 # Run all tests
-pytest tests/ -v
+python3 -m pytest tests/ -v
 
 # Run with coverage
-pytest tests/ -v --cov=. --cov-report=term-missing
+python3 -m pytest tests/ -v --cov=src/ --cov-report=term-missing
 ```
 
 345 tests cover parsing, signal helpers, security mapping, Rich table rendering, subprocess error handling, credentials file loading, network connection, DNS query capture, ARP client detection, connected network indicator, monitor mode helpers, main() integration, input validation, CommandRunner injection, and edge cases.
@@ -215,7 +227,7 @@ The codebase has been reviewed by DevSecOps and Red Team agents:
 
 If monitor mode shows "client counts enabled" but no networks or client counts appear:
 
-1. **Run with `--debug`** — Use `sudo python wifi_monitor_nitro5.py --monitor -i wlp4s0 --debug` to enable verbose logging. Python debug output is written to `/tmp/wifi_monitor_nitro5_debug.log` (settings, feature flags, monitor setup, per-scan parse results).
+1. **Run with `--debug`** — Use `sudo wifimonitor --monitor -i wlp4s0 --debug` to enable verbose logging. Python debug output is written to `/tmp/wifi_monitor_nitro5_debug.log` (settings, feature flags, monitor setup, per-scan parse results).
 2. **Check the airodump log** — Inspect `/tmp/wifi_monitor_nitro5_airodump.log` for airodump-ng stderr. The file is pre-populated with a header and the command used. If airodump exits immediately, the log will show the exit code.
 3. **Check monitor mode setup** — Inspect `/tmp/wifi_monitor_nitro5_monitor.log` for failures during `ip`/`iw` commands (e.g. "device does not support monitor mode").
 4. **Interface stays managed** — If the log shows "Interface X is not type monitor", NetworkManager may be reclaiming the interface or the driver may not actually support monitor mode. Options:
@@ -230,7 +242,7 @@ If monitor mode shows "client counts enabled" but no networks or client counts a
 
 ### Refactoring
 
-- **Package layout** (3 pts) -- Migrate to `src/wifimonitor/` package structure with `pyproject.toml`, `__version__`, and console entry point. Unifies the dual requirements files into a single dependency spec.
+- ~~**Package layout** (3 pts)~~ -- **Complete.** Project is packaged under `src/wifimonitor/` with a `wifimonitor` console entry point and `python -m wifimonitor` support.
 - ~~**Test coverage for wifi_monitor_nitro5.py** (3 pts)~~ -- **Complete.** Coverage raised to 98% (345 tests).
 - **Scanner and Renderer protocols** (3 pts) -- Define `ScannerProtocol` and `RendererProtocol` abstractions. Split `wifi_monitor_nitro5.py` into `NmcliScanner`, `RichRenderer`, and a thin `MonitorApp` coordinator (Single Responsibility).
 - **UX agent** (3 pts) -- Create a UX agent that evaluates and suggests improvements for both the CLI/TUI (Rich tables, layout, color, information density) and future GUI surfaces. Integrate into the manager pipeline alongside the existing review agents.
