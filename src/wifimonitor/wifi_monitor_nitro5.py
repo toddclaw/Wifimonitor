@@ -44,7 +44,7 @@ from rich.live import Live
 from rich.markup import escape
 from rich.table import Table
 
-from wifi_common import (
+from wifimonitor.wifi_common import (
     Network, parse_airodump_csv, signal_to_bars, signal_color, security_color,
     COLOR_TO_RICH,
     CommandRunner, SubprocessRunner,

@@ -4,7 +4,7 @@ import logging
 
 import pytest
 
-from wifi_common import (
+from wifimonitor.wifi_common import (
     Network,
     signal_to_bars,
     signal_color,
@@ -342,7 +342,7 @@ class TestParseAirodumpCsvLogging:
             " LAN IP, ID-length, ESSID, Key\r\n"
             "AA:BB:CC:DD:EE:01, short row\r\n"
         )
-        with caplog.at_level(logging.DEBUG, logger="wifi_common"):
+        with caplog.at_level(logging.DEBUG, logger="wifimonitor.wifi_common"):
             networks, _ = parse_airodump_csv(csv_data)
         assert len(networks) == 0
         assert any("Skipped AP row" in msg for msg in caplog.messages)
@@ -358,13 +358,13 @@ class TestParseAirodumpCsvLogging:
             " BSSID, Probed ESSIDs\r\n"
             "11:22:33:44:55:01, short\r\n"
         )
-        with caplog.at_level(logging.DEBUG, logger="wifi_common"):
+        with caplog.at_level(logging.DEBUG, logger="wifimonitor.wifi_common"):
             parse_airodump_csv(csv_data)
         assert any("Skipped station row" in msg for msg in caplog.messages)
 
     def test_valid_rows_produce_no_skip_log(self, caplog):
         """Well-formed CSV produces no skip debug messages."""
-        with caplog.at_level(logging.DEBUG, logger="wifi_common"):
+        with caplog.at_level(logging.DEBUG, logger="wifimonitor.wifi_common"):
             parse_airodump_csv(SAMPLE_AIRODUMP_CSV)
         skip_msgs = [m for m in caplog.messages if "Skipped" in m]
         assert skip_msgs == []

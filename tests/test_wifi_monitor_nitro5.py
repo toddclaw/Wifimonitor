@@ -15,8 +15,8 @@ from unittest.mock import MagicMock, mock_open, patch
 
 import pytest
 
-from wifi_common import Network
-from wifi_monitor_nitro5 import (
+from wifimonitor.wifi_common import Network
+from wifimonitor.wifi_monitor_nitro5 import (
     MIN_PYTHON,
     parse_nmcli_output,
     _split_nmcli_line,
@@ -457,21 +457,21 @@ class TestBuildTable:
 class TestScanWifiNmcli:
     """scan_wifi_nmcli must handle subprocess failures gracefully."""
 
-    @patch("wifi_monitor_nitro5.subprocess.run")
+    @patch("wifimonitor.wifi_monitor_nitro5.subprocess.run")
     def test_scan_wifi_nmcli_timeout_returns_empty_list(self, mock_run):
         """If nmcli times out, return empty list instead of crashing."""
         mock_run.side_effect = subprocess.TimeoutExpired(cmd=["nmcli"], timeout=15)
         result = scan_wifi_nmcli()
         assert result == []
 
-    @patch("wifi_monitor_nitro5.subprocess.run")
+    @patch("wifimonitor.wifi_monitor_nitro5.subprocess.run")
     def test_scan_wifi_nmcli_subprocess_error_returns_empty_list(self, mock_run):
         """If nmcli is not found or fails, return empty list."""
         mock_run.side_effect = FileNotFoundError("nmcli not found")
         result = scan_wifi_nmcli()
         assert result == []
 
-    @patch("wifi_monitor_nitro5.subprocess.run")
+    @patch("wifimonitor.wifi_monitor_nitro5.subprocess.run")
     def test_scan_wifi_nmcli_rescan_failure_still_lists(self, mock_run):
         """If rescan fails but list succeeds, still return networks."""
         rescan_result = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="")
@@ -485,7 +485,7 @@ class TestScanWifiNmcli:
         assert len(result) == 1
         assert result[0].ssid == "TestNet"
 
-    @patch("wifi_monitor_nitro5.subprocess.run")
+    @patch("wifimonitor.wifi_monitor_nitro5.subprocess.run")
     def test_scan_wifi_nmcli_uses_minimal_env(self, mock_run):
         """Subprocess should not inherit the full user environment."""
         mock_run.return_value = subprocess.CompletedProcess(
@@ -617,7 +617,7 @@ class TestLoadCredentials:
 class TestConnectWifiNmcli:
     """connect_wifi_nmcli joins a network via nmcli."""
 
-    @patch("wifi_monitor_nitro5.subprocess.run")
+    @patch("wifimonitor.wifi_monitor_nitro5.subprocess.run")
     def test_connect_wifi_nmcli_success_returns_true(self, mock_run):
         mock_run.return_value = subprocess.CompletedProcess(
             args=[], returncode=0, stdout="", stderr="",
@@ -625,7 +625,7 @@ class TestConnectWifiNmcli:
         result = connect_wifi_nmcli("TestNet", "password123")
         assert result is True
 
-    @patch("wifi_monitor_nitro5.subprocess.run")
+    @patch("wifimonitor.wifi_monitor_nitro5.subprocess.run")
     def test_connect_wifi_nmcli_failure_returns_false(self, mock_run):
         mock_run.return_value = subprocess.CompletedProcess(
             args=[], returncode=1, stdout="", stderr="Connection failed",
@@ -633,19 +633,19 @@ class TestConnectWifiNmcli:
         result = connect_wifi_nmcli("TestNet", "wrongpass")
         assert result is False
 
-    @patch("wifi_monitor_nitro5.subprocess.run")
+    @patch("wifimonitor.wifi_monitor_nitro5.subprocess.run")
     def test_connect_wifi_nmcli_timeout_returns_false(self, mock_run):
         mock_run.side_effect = subprocess.TimeoutExpired(cmd=["nmcli"], timeout=30)
         result = connect_wifi_nmcli("TestNet", "password123")
         assert result is False
 
-    @patch("wifi_monitor_nitro5.subprocess.run")
+    @patch("wifimonitor.wifi_monitor_nitro5.subprocess.run")
     def test_connect_wifi_nmcli_nmcli_not_found_returns_false(self, mock_run):
         mock_run.side_effect = FileNotFoundError("nmcli not found")
         result = connect_wifi_nmcli("TestNet", "password123")
         assert result is False
 
-    @patch("wifi_monitor_nitro5.subprocess.run")
+    @patch("wifimonitor.wifi_monitor_nitro5.subprocess.run")
     def test_connect_wifi_nmcli_uses_list_args(self, mock_run):
         """Must use list args, never shell=True."""
         mock_run.return_value = subprocess.CompletedProcess(
@@ -659,7 +659,7 @@ class TestConnectWifiNmcli:
         assert "TestNet" in cmd
         assert "password123" in cmd
 
-    @patch("wifi_monitor_nitro5.subprocess.run")
+    @patch("wifimonitor.wifi_monitor_nitro5.subprocess.run")
     def test_connect_wifi_nmcli_with_interface(self, mock_run):
         mock_run.return_value = subprocess.CompletedProcess(
             args=[], returncode=0, stdout="", stderr="",
@@ -670,7 +670,7 @@ class TestConnectWifiNmcli:
         assert "ifname" in cmd
         assert "wlan1" in cmd
 
-    @patch("wifi_monitor_nitro5.subprocess.run")
+    @patch("wifimonitor.wifi_monitor_nitro5.subprocess.run")
     def test_connect_wifi_nmcli_uses_minimal_env(self, mock_run):
         mock_run.return_value = subprocess.CompletedProcess(
             args=[], returncode=0, stdout="", stderr="",
@@ -681,7 +681,7 @@ class TestConnectWifiNmcli:
         assert "LC_ALL" in env
         assert len(env) <= 4
 
-    @patch("wifi_monitor_nitro5.subprocess.run")
+    @patch("wifimonitor.wifi_monitor_nitro5.subprocess.run")
     def test_connect_wifi_nmcli_open_network_empty_passphrase(self, mock_run):
         """Open networks use empty passphrase — should still call nmcli."""
         mock_run.return_value = subprocess.CompletedProcess(
@@ -883,7 +883,7 @@ class TestDnsTracker:
         tracker.record("google.com")
         assert tracker.top(0) == []
 
-    @patch("wifi_monitor_nitro5.subprocess.Popen")
+    @patch("wifimonitor.wifi_monitor_nitro5.subprocess.Popen")
     def test_start_returns_true_when_tcpdump_available(self, mock_popen):
         mock_proc = MagicMock()
         mock_proc.stdout = iter([])
@@ -892,13 +892,13 @@ class TestDnsTracker:
         assert tracker.start() is True
         tracker.stop()
 
-    @patch("wifi_monitor_nitro5.subprocess.Popen")
+    @patch("wifimonitor.wifi_monitor_nitro5.subprocess.Popen")
     def test_start_returns_false_when_tcpdump_not_found(self, mock_popen):
         mock_popen.side_effect = FileNotFoundError("tcpdump not found")
         tracker = DnsTracker()
         assert tracker.start() is False
 
-    @patch("wifi_monitor_nitro5.subprocess.Popen")
+    @patch("wifimonitor.wifi_monitor_nitro5.subprocess.Popen")
     def test_start_uses_list_args(self, mock_popen):
         mock_proc = MagicMock()
         mock_proc.stdout = iter([])
@@ -911,7 +911,7 @@ class TestDnsTracker:
         assert "tcpdump" in cmd
         tracker.stop()
 
-    @patch("wifi_monitor_nitro5.subprocess.Popen")
+    @patch("wifimonitor.wifi_monitor_nitro5.subprocess.Popen")
     def test_start_with_interface_includes_iflag(self, mock_popen):
         mock_proc = MagicMock()
         mock_proc.stdout = iter([])
@@ -924,7 +924,7 @@ class TestDnsTracker:
         assert "wlan0" in cmd
         tracker.stop()
 
-    @patch("wifi_monitor_nitro5.subprocess.Popen")
+    @patch("wifimonitor.wifi_monitor_nitro5.subprocess.Popen")
     def test_start_uses_minimal_env(self, mock_popen):
         mock_proc = MagicMock()
         mock_proc.stdout = iter([])
@@ -937,7 +937,7 @@ class TestDnsTracker:
         assert len(env) <= 4
         tracker.stop()
 
-    @patch("wifi_monitor_nitro5.subprocess.Popen")
+    @patch("wifimonitor.wifi_monitor_nitro5.subprocess.Popen")
     def test_stop_terminates_process(self, mock_popen):
         mock_proc = MagicMock()
         mock_proc.stdout = iter([])
@@ -1039,7 +1039,7 @@ class TestAirodumpScanner:
 
         scanner = AirodumpScanner(interface="wlan0", prefix="/tmp/test_wifi")
         with (
-            patch("wifi_monitor_nitro5.glob.glob", return_value=["/tmp/test_wifi-01.csv"]),
+            patch("wifimonitor.wifi_monitor_nitro5.glob.glob", return_value=["/tmp/test_wifi-01.csv"]),
             patch("builtins.open", mock_open(read_data=SAMPLE_AIRODUMP_CSV)),
         ):
             networks = scanner.scan()
@@ -1051,7 +1051,7 @@ class TestAirodumpScanner:
     def test_scan_no_csv_returns_empty_list(self):
         """When no CSV file exists yet, scan returns empty list."""
         scanner = AirodumpScanner(interface="wlan0", prefix="/tmp/test_wifi")
-        with patch("wifi_monitor_nitro5.glob.glob", return_value=[]):
+        with patch("wifimonitor.wifi_monitor_nitro5.glob.glob", return_value=[]):
             networks = scanner.scan()
         assert networks == []
 
@@ -1059,7 +1059,7 @@ class TestAirodumpScanner:
         """When CSV file cannot be read, scan returns empty list."""
         scanner = AirodumpScanner(interface="wlan0", prefix="/tmp/test_wifi")
         with (
-            patch("wifi_monitor_nitro5.glob.glob", return_value=["/tmp/test_wifi-01.csv"]),
+            patch("wifimonitor.wifi_monitor_nitro5.glob.glob", return_value=["/tmp/test_wifi-01.csv"]),
             patch("builtins.open", side_effect=OSError("Permission denied")),
         ):
             networks = scanner.scan()
@@ -1077,10 +1077,10 @@ class TestAirodumpScanner:
             r"aa\:bb\:cc\:dd\:ee\:03:OtherNet:1:70:WPA2" + "\n"
         )
         with (
-            patch("wifi_monitor_nitro5.glob.glob", return_value=["/tmp/test_wifi-01.csv"]),
+            patch("wifimonitor.wifi_monitor_nitro5.glob.glob", return_value=["/tmp/test_wifi-01.csv"]),
             patch("builtins.open", mock_open(read_data=SAMPLE_AIRODUMP_CSV)),
             patch(
-                "wifi_monitor_nitro5.scan_wifi_nmcli",
+                "wifimonitor.wifi_monitor_nitro5.scan_wifi_nmcli",
                 return_value=nmcli_networks,
             ),
         ):
@@ -1119,8 +1119,8 @@ class TestAirodumpScanner:
         )
         scanner = AirodumpScanner(interface="wlan0", runner=fake)
         with (
-            patch("wifi_monitor_nitro5.os.geteuid", return_value=0),
-            patch("wifi_monitor_nitro5.time.sleep"),
+            patch("wifimonitor.wifi_monitor_nitro5.os.geteuid", return_value=0),
+            patch("wifimonitor.wifi_monitor_nitro5.time.sleep"),
         ):
             ok, _ = scanner.start()
         assert ok is True
@@ -1160,8 +1160,8 @@ class TestAirodumpScanner:
         )
         scanner = AirodumpScanner(interface="wlan0", runner=fake)
         with (
-            patch("wifi_monitor_nitro5.os.geteuid", return_value=0),
-            patch("wifi_monitor_nitro5.time.sleep"),
+            patch("wifimonitor.wifi_monitor_nitro5.os.geteuid", return_value=0),
+            patch("wifimonitor.wifi_monitor_nitro5.time.sleep"),
         ):
             ok, _ = scanner.start()
         assert ok is True
@@ -1193,8 +1193,8 @@ class TestAirodumpScanner:
         )
         scanner = AirodumpScanner(interface="wlan0", runner=fake)
         with (
-            patch("wifi_monitor_nitro5.os.geteuid", return_value=0),
-            patch("wifi_monitor_nitro5.time.sleep"),
+            patch("wifimonitor.wifi_monitor_nitro5.os.geteuid", return_value=0),
+            patch("wifimonitor.wifi_monitor_nitro5.time.sleep"),
         ):
             ok, reason = scanner.start()
         assert ok is False
@@ -1226,7 +1226,7 @@ class TestAirodumpScanner:
             nmcli_fail,  # nmcli managed no — fails
         )
         scanner = AirodumpScanner(interface="wlan0", runner=fake)
-        with patch("wifi_monitor_nitro5.time.sleep"):
+        with patch("wifimonitor.wifi_monitor_nitro5.time.sleep"):
             ok, reason = scanner.start()
         assert ok is False
         assert reason == "monitor_mode"
@@ -1263,8 +1263,8 @@ class TestAirodumpScanner:
         )
         scanner = AirodumpScanner(interface="wlan0", runner=fake)
         with (
-            patch("wifi_monitor_nitro5.os.geteuid", return_value=0),
-            patch("wifi_monitor_nitro5.time.sleep"),
+            patch("wifimonitor.wifi_monitor_nitro5.os.geteuid", return_value=0),
+            patch("wifimonitor.wifi_monitor_nitro5.time.sleep"),
         ):
             ok, _ = scanner.start()
         assert ok is True
@@ -1305,8 +1305,8 @@ class TestAirodumpScanner:
         )
         scanner = AirodumpScanner(interface="wlan0", runner=fake)
         with (
-            patch("wifi_monitor_nitro5.os.geteuid", return_value=0),
-            patch("wifi_monitor_nitro5.time.sleep"),
+            patch("wifimonitor.wifi_monitor_nitro5.os.geteuid", return_value=0),
+            patch("wifimonitor.wifi_monitor_nitro5.time.sleep"),
         ):
             ok, _ = scanner.start()
         assert ok is True
@@ -1346,8 +1346,8 @@ class TestAirodumpScanner:
         )
         scanner = AirodumpScanner(interface="wlan0", runner=fake)
         with (
-            patch("wifi_monitor_nitro5.os.geteuid", return_value=0),
-            patch("wifi_monitor_nitro5.time.sleep"),
+            patch("wifimonitor.wifi_monitor_nitro5.os.geteuid", return_value=0),
+            patch("wifimonitor.wifi_monitor_nitro5.time.sleep"),
         ):
             ok, _ = scanner.start()
         assert ok is True
@@ -1918,8 +1918,8 @@ class TestLoadCredentialsErrorPaths:
         creds_file = tmp_path / "creds.csv"
         creds_file.write_text("Home,pass123\n")
         with (
-            patch("wifi_monitor_nitro5.os.stat", side_effect=OSError("no stat")),
-            patch("wifi_monitor_nitro5.os.path.isfile", return_value=True),
+            patch("wifimonitor.wifi_monitor_nitro5.os.stat", side_effect=OSError("no stat")),
+            patch("wifimonitor.wifi_monitor_nitro5.os.path.isfile", return_value=True),
         ):
             result = load_credentials(str(creds_file))
         assert result == {"Home": "pass123"}
@@ -2133,7 +2133,7 @@ class TestEnableMonitorMode:
             ip_down, iw_type, ip_up,   # cmds
             verify_ok,                 # _verify_monitor_mode
         ]
-        with patch("wifi_monitor_nitro5.time.sleep"):
+        with patch("wifimonitor.wifi_monitor_nitro5.time.sleep"):
             result = _enable_monitor_mode("wlan0", runner=runner)
         assert result is True
 
@@ -2151,8 +2151,8 @@ class TestEnableMonitorMode:
             ip_down_fail,   # ip link down → fails
         ]
         with (
-            patch("wifi_monitor_nitro5.AIRODUMP_MONITOR_LOG", log_file),
-            patch("wifi_monitor_nitro5.time.sleep"),
+            patch("wifimonitor.wifi_monitor_nitro5.AIRODUMP_MONITOR_LOG", log_file),
+            patch("wifimonitor.wifi_monitor_nitro5.time.sleep"),
         ):
             result = _enable_monitor_mode("wlan0", runner=runner)
         assert result is False
@@ -2168,8 +2168,8 @@ class TestEnableMonitorMode:
             OSError("ip not found"),  # ip link down → exception
         ]
         with (
-            patch("wifi_monitor_nitro5.AIRODUMP_MONITOR_LOG", log_file),
-            patch("wifi_monitor_nitro5.time.sleep"),
+            patch("wifimonitor.wifi_monitor_nitro5.AIRODUMP_MONITOR_LOG", log_file),
+            patch("wifimonitor.wifi_monitor_nitro5.time.sleep"),
         ):
             result = _enable_monitor_mode("wlan0", runner=runner)
         assert result is False
@@ -2189,7 +2189,7 @@ class TestVerifyMonitorMode:
         fake = _FakeRunner()
         fail = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="error")
         fake.set_run_results(fail)
-        with patch("wifi_monitor_nitro5.AIRODUMP_MONITOR_LOG", log_file):
+        with patch("wifimonitor.wifi_monitor_nitro5.AIRODUMP_MONITOR_LOG", log_file):
             result = _verify_monitor_mode("wlan0", runner=fake)
         assert result is False
 
@@ -2201,7 +2201,7 @@ class TestVerifyMonitorMode:
             args=[], returncode=0, stdout="Interface wlan0\n  type managed\n", stderr=""
         )
         fake.set_run_results(result_ok)
-        with patch("wifi_monitor_nitro5.AIRODUMP_MONITOR_LOG", log_file):
+        with patch("wifimonitor.wifi_monitor_nitro5.AIRODUMP_MONITOR_LOG", log_file):
             result = _verify_monitor_mode("wlan0", runner=fake, iw_set_type_returncode=0)
         assert result is False
 
@@ -2210,7 +2210,7 @@ class TestVerifyMonitorMode:
         log_file = str(tmp_path / "monitor.log")
         fake = _FakeRunner()
         fake.set_run_side_effect(subprocess.TimeoutExpired(cmd="iw", timeout=5))
-        with patch("wifi_monitor_nitro5.AIRODUMP_MONITOR_LOG", log_file):
+        with patch("wifimonitor.wifi_monitor_nitro5.AIRODUMP_MONITOR_LOG", log_file):
             result = _verify_monitor_mode("wlan0", runner=fake)
         assert result is False
 
@@ -2227,7 +2227,7 @@ class TestLogAirodumpExit:
         """Writes exit details and calls flush() on stderr_file."""
         log_file = str(tmp_path / "airodump.log")
         mock_file = MagicMock()
-        with patch("wifi_monitor_nitro5.AIRODUMP_STDERR_LOG", log_file):
+        with patch("wifimonitor.wifi_monitor_nitro5.AIRODUMP_STDERR_LOG", log_file):
             _log_airodump_exit(returncode=1, cmd=["airodump-ng"], stderr_file=mock_file)
         mock_file.flush.assert_called_once()
         content = open(log_file).read()
@@ -2246,7 +2246,7 @@ class TestLogMonitorFailure:
     def test_writes_details_with_bytes_stdout_and_returncode(self, tmp_path):
         """Covers bytes decode path and returncode write."""
         log_file = str(tmp_path / "monitor.log")
-        with patch("wifi_monitor_nitro5.AIRODUMP_MONITOR_LOG", log_file):
+        with patch("wifimonitor.wifi_monitor_nitro5.AIRODUMP_MONITOR_LOG", log_file):
             _log_monitor_failure("test failure", 1, b"stdout bytes", b"stderr bytes")
         content = open(log_file).read()
         assert "[monitor] test failure" in content
@@ -2372,9 +2372,9 @@ class TestAirodumpScannerAdditionalPaths:
         )
         scanner = AirodumpScanner(interface="wlan0", runner=fake)
         with (
-            patch("wifi_monitor_nitro5.AIRODUMP_STDERR_LOG", log_file),
-            patch("wifi_monitor_nitro5.os.geteuid", return_value=0),
-            patch("wifi_monitor_nitro5.time.sleep"),
+            patch("wifimonitor.wifi_monitor_nitro5.AIRODUMP_STDERR_LOG", log_file),
+            patch("wifimonitor.wifi_monitor_nitro5.os.geteuid", return_value=0),
+            patch("wifimonitor.wifi_monitor_nitro5.time.sleep"),
         ):
             ok, _ = scanner.start()
         assert ok is True
@@ -2399,9 +2399,9 @@ class TestAirodumpScannerAdditionalPaths:
         )
         scanner = AirodumpScanner(interface="wlan0", runner=fake, debug=True)
         with (
-            patch("wifi_monitor_nitro5.AIRODUMP_STDERR_LOG", log_file),
-            patch("wifi_monitor_nitro5.os.geteuid", return_value=0),
-            patch("wifi_monitor_nitro5.time.sleep"),
+            patch("wifimonitor.wifi_monitor_nitro5.AIRODUMP_STDERR_LOG", log_file),
+            patch("wifimonitor.wifi_monitor_nitro5.os.geteuid", return_value=0),
+            patch("wifimonitor.wifi_monitor_nitro5.time.sleep"),
         ):
             ok, _ = scanner.start()
         assert ok is True
@@ -2449,9 +2449,9 @@ class TestAirodumpScannerAdditionalPaths:
         ]
         scanner = AirodumpScanner(interface="wlan0", runner=runner, debug=True)
         with (
-            patch("wifi_monitor_nitro5.AIRODUMP_STDERR_LOG", log_file),
-            patch("wifi_monitor_nitro5.os.geteuid", return_value=0),
-            patch("wifi_monitor_nitro5.time.sleep"),
+            patch("wifimonitor.wifi_monitor_nitro5.AIRODUMP_STDERR_LOG", log_file),
+            patch("wifimonitor.wifi_monitor_nitro5.os.geteuid", return_value=0),
+            patch("wifimonitor.wifi_monitor_nitro5.time.sleep"),
         ):
             ok, _ = scanner.start()
         assert ok is True
@@ -2480,9 +2480,9 @@ class TestAirodumpScannerAdditionalPaths:
         )
         scanner = AirodumpScanner(interface="wlan0", runner=fake)
         with (
-            patch("wifi_monitor_nitro5.AIRODUMP_STDERR_LOG", log_file),
-            patch("wifi_monitor_nitro5.os.geteuid", return_value=0),
-            patch("wifi_monitor_nitro5.time.sleep"),
+            patch("wifimonitor.wifi_monitor_nitro5.AIRODUMP_STDERR_LOG", log_file),
+            patch("wifimonitor.wifi_monitor_nitro5.os.geteuid", return_value=0),
+            patch("wifimonitor.wifi_monitor_nitro5.time.sleep"),
         ):
             ok, reason = scanner.start()
         assert ok is False
@@ -2526,7 +2526,7 @@ class TestAirodumpScannerAdditionalPaths:
         mock_proc.returncode = 1
         scanner._proc = mock_proc
         scanner._last_cmd = ["airodump-ng"]
-        with patch("wifi_monitor_nitro5.AIRODUMP_STDERR_LOG", log_file):
+        with patch("wifimonitor.wifi_monitor_nitro5.AIRODUMP_STDERR_LOG", log_file):
             result = scanner.log_exit_if_dead()
         assert result is False
         assert scanner._exit_logged is True
@@ -2536,7 +2536,7 @@ class TestAirodumpScannerAdditionalPaths:
         from tests.test_wifi_common import SAMPLE_AIRODUMP_CSV
         scanner = AirodumpScanner(interface="wlan0", prefix="/tmp/test_wifi_cov", debug=True)
         with (
-            patch("wifi_monitor_nitro5.glob.glob", return_value=["/tmp/test_wifi_cov-01.csv"]),
+            patch("wifimonitor.wifi_monitor_nitro5.glob.glob", return_value=["/tmp/test_wifi_cov-01.csv"]),
             patch("builtins.open", mock_open(read_data=SAMPLE_AIRODUMP_CSV)),
         ):
             networks = scanner.scan()
@@ -2546,7 +2546,7 @@ class TestAirodumpScannerAdditionalPaths:
         """scan() with debug=True logs when CSV read fails with OSError."""
         scanner = AirodumpScanner(interface="wlan0", prefix="/tmp/test_wifi_cov", debug=True)
         with (
-            patch("wifi_monitor_nitro5.glob.glob", return_value=["/tmp/test_wifi_cov-01.csv"]),
+            patch("wifimonitor.wifi_monitor_nitro5.glob.glob", return_value=["/tmp/test_wifi_cov-01.csv"]),
             patch("builtins.open", side_effect=OSError("permission denied")),
         ):
             networks = scanner.scan()
@@ -2561,9 +2561,9 @@ class TestAirodumpScannerAdditionalPaths:
             r"aa\:bb\:cc\:dd\:ee\:01:HomeNetwork:6:85:WPA2" + "\n"
         )
         with (
-            patch("wifi_monitor_nitro5.glob.glob", return_value=["/tmp/test_wifi_cov-01.csv"]),
+            patch("wifimonitor.wifi_monitor_nitro5.glob.glob", return_value=["/tmp/test_wifi_cov-01.csv"]),
             patch("builtins.open", mock_open(read_data=SAMPLE_AIRODUMP_CSV)),
-            patch("wifi_monitor_nitro5.scan_wifi_nmcli", return_value=nmcli_networks),
+            patch("wifimonitor.wifi_monitor_nitro5.scan_wifi_nmcli", return_value=nmcli_networks),
         ):
             networks = scanner.scan()
         assert len(networks) == 1
@@ -2574,7 +2574,7 @@ class TestAirodumpScannerAdditionalPaths:
         # Create a file that matches the prefix pattern
         test_file = tmp_path / "wifi-01.csv"
         test_file.write_text("content")
-        with patch("wifi_monitor_nitro5.os.remove", side_effect=OSError("busy")):
+        with patch("wifimonitor.wifi_monitor_nitro5.os.remove", side_effect=OSError("busy")):
             scanner._cleanup_old_files()  # must not raise
 
     def test_start_direct_monitor_debug_logs(self, tmp_path):
@@ -2611,9 +2611,9 @@ class TestAirodumpScannerAdditionalPaths:
         ]
         scanner = AirodumpScanner(interface="wlan0", runner=runner, debug=True)
         with (
-            patch("wifi_monitor_nitro5.AIRODUMP_STDERR_LOG", log_file),
-            patch("wifi_monitor_nitro5.os.geteuid", return_value=0),
-            patch("wifi_monitor_nitro5.time.sleep"),
+            patch("wifimonitor.wifi_monitor_nitro5.AIRODUMP_STDERR_LOG", log_file),
+            patch("wifimonitor.wifi_monitor_nitro5.os.geteuid", return_value=0),
+            patch("wifimonitor.wifi_monitor_nitro5.time.sleep"),
         ):
             ok, _ = scanner.start()
         assert ok is True
@@ -2688,8 +2688,8 @@ class TestEnableMonitorModeVerifyFails:
             verify_fail,     # _verify_monitor_mode: "type managed" → False
         ]
         with (
-            patch("wifi_monitor_nitro5.AIRODUMP_MONITOR_LOG", log_file),
-            patch("wifi_monitor_nitro5.time.sleep"),
+            patch("wifimonitor.wifi_monitor_nitro5.AIRODUMP_MONITOR_LOG", log_file),
+            patch("wifimonitor.wifi_monitor_nitro5.time.sleep"),
         ):
             result = _enable_monitor_mode("wlan0", runner=runner)
         assert result is False
@@ -2742,9 +2742,9 @@ class TestAirodumpScannerNonRootPath:
         )
         scanner = AirodumpScanner(interface="wlan0", runner=fake)
         with (
-            patch("wifi_monitor_nitro5.AIRODUMP_STDERR_LOG", log_file),
-            patch("wifi_monitor_nitro5.os.geteuid", return_value=1000),
-            patch("wifi_monitor_nitro5.time.sleep"),
+            patch("wifimonitor.wifi_monitor_nitro5.AIRODUMP_STDERR_LOG", log_file),
+            patch("wifimonitor.wifi_monitor_nitro5.os.geteuid", return_value=1000),
+            patch("wifimonitor.wifi_monitor_nitro5.time.sleep"),
         ):
             ok, _ = scanner.start()
         assert ok is True
@@ -2809,7 +2809,7 @@ class TestScanDebugMoreThanTenNetworks:
         )
         scanner = AirodumpScanner(interface="wlan0", prefix="/tmp/test_dbg11", debug=True)
         with (
-            patch("wifi_monitor_nitro5.glob.glob", return_value=["/tmp/test_dbg11-01.csv"]),
+            patch("wifimonitor.wifi_monitor_nitro5.glob.glob", return_value=["/tmp/test_dbg11-01.csv"]),
             patch("builtins.open", mock_open(read_data=csv_content)),
         ):
             networks = scanner.scan()
@@ -2840,79 +2840,79 @@ class TestMain:
 
     def test_main_no_flags_exits_on_keyboard_interrupt(self):
         """main() with no flags runs one cycle then exits on KeyboardInterrupt."""
-        from wifi_monitor_nitro5 import main
+        from wifimonitor.wifi_monitor_nitro5 import main
         with (
-            patch("wifi_monitor_nitro5._parse_args", return_value=self._args()),
-            patch("wifi_monitor_nitro5.Console"),
-            patch("wifi_monitor_nitro5.Live"),
-            patch("wifi_monitor_nitro5.scan_wifi_nmcli", return_value=self._nets()),
-            patch("wifi_monitor_nitro5._get_connected_bssid", return_value=None),
-            patch("wifi_monitor_nitro5.time.sleep", side_effect=KeyboardInterrupt),
-            patch("wifi_monitor_nitro5.sys.exit"),
+            patch("wifimonitor.wifi_monitor_nitro5._parse_args", return_value=self._args()),
+            patch("wifimonitor.wifi_monitor_nitro5.Console"),
+            patch("wifimonitor.wifi_monitor_nitro5.Live"),
+            patch("wifimonitor.wifi_monitor_nitro5.scan_wifi_nmcli", return_value=self._nets()),
+            patch("wifimonitor.wifi_monitor_nitro5._get_connected_bssid", return_value=None),
+            patch("wifimonitor.wifi_monitor_nitro5.time.sleep", side_effect=KeyboardInterrupt),
+            patch("wifimonitor.wifi_monitor_nitro5.sys.exit"),
         ):
             main()
 
     def test_main_arp_flag_creates_arp_scanner(self):
         """main() with --arp creates ArpScanner and overlays client count."""
-        from wifi_monitor_nitro5 import main
+        from wifimonitor.wifi_monitor_nitro5 import main
         with (
-            patch("wifi_monitor_nitro5._parse_args", return_value=self._args(arp=True)),
-            patch("wifi_monitor_nitro5.Console"),
-            patch("wifi_monitor_nitro5.Live"),
-            patch("wifi_monitor_nitro5.scan_wifi_nmcli", return_value=self._nets()),
-            patch("wifi_monitor_nitro5._get_connected_bssid", return_value="aa:bb:cc:dd:ee:01"),
-            patch("wifi_monitor_nitro5.ArpScanner") as mock_arp_cls,
-            patch("wifi_monitor_nitro5.time.sleep", side_effect=KeyboardInterrupt),
-            patch("wifi_monitor_nitro5.sys.exit"),
+            patch("wifimonitor.wifi_monitor_nitro5._parse_args", return_value=self._args(arp=True)),
+            patch("wifimonitor.wifi_monitor_nitro5.Console"),
+            patch("wifimonitor.wifi_monitor_nitro5.Live"),
+            patch("wifimonitor.wifi_monitor_nitro5.scan_wifi_nmcli", return_value=self._nets()),
+            patch("wifimonitor.wifi_monitor_nitro5._get_connected_bssid", return_value="aa:bb:cc:dd:ee:01"),
+            patch("wifimonitor.wifi_monitor_nitro5.ArpScanner") as mock_arp_cls,
+            patch("wifimonitor.wifi_monitor_nitro5.time.sleep", side_effect=KeyboardInterrupt),
+            patch("wifimonitor.wifi_monitor_nitro5.sys.exit"),
         ):
             mock_arp_cls.return_value.scan.return_value = 5
             main()
 
     def test_main_credentials_loaded_and_auto_connect(self):
         """main() with --credentials and --connect loads creds and connects."""
-        from wifi_monitor_nitro5 import main
+        from wifimonitor.wifi_monitor_nitro5 import main
         with (
-            patch("wifi_monitor_nitro5._parse_args",
+            patch("wifimonitor.wifi_monitor_nitro5._parse_args",
                   return_value=self._args(credentials="creds.csv", connect=True)),
-            patch("wifi_monitor_nitro5.Console"),
-            patch("wifi_monitor_nitro5.Live"),
-            patch("wifi_monitor_nitro5.load_credentials", return_value={"HomeNet": "pass"}),
-            patch("wifi_monitor_nitro5.scan_wifi_nmcli", return_value=self._nets()),
-            patch("wifi_monitor_nitro5._get_connected_bssid", return_value=None),
-            patch("wifi_monitor_nitro5.connect_wifi_nmcli", return_value=True),
-            patch("wifi_monitor_nitro5.time.sleep", side_effect=KeyboardInterrupt),
-            patch("wifi_monitor_nitro5.sys.exit"),
+            patch("wifimonitor.wifi_monitor_nitro5.Console"),
+            patch("wifimonitor.wifi_monitor_nitro5.Live"),
+            patch("wifimonitor.wifi_monitor_nitro5.load_credentials", return_value={"HomeNet": "pass"}),
+            patch("wifimonitor.wifi_monitor_nitro5.scan_wifi_nmcli", return_value=self._nets()),
+            patch("wifimonitor.wifi_monitor_nitro5._get_connected_bssid", return_value=None),
+            patch("wifimonitor.wifi_monitor_nitro5.connect_wifi_nmcli", return_value=True),
+            patch("wifimonitor.wifi_monitor_nitro5.time.sleep", side_effect=KeyboardInterrupt),
+            patch("wifimonitor.wifi_monitor_nitro5.sys.exit"),
         ):
             main()
 
     def test_main_credentials_empty_warns(self):
         """main() warns when credentials file loads no entries."""
-        from wifi_monitor_nitro5 import main
+        from wifimonitor.wifi_monitor_nitro5 import main
         with (
-            patch("wifi_monitor_nitro5._parse_args",
+            patch("wifimonitor.wifi_monitor_nitro5._parse_args",
                   return_value=self._args(credentials="empty.csv")),
-            patch("wifi_monitor_nitro5.Console"),
-            patch("wifi_monitor_nitro5.Live"),
-            patch("wifi_monitor_nitro5.load_credentials", return_value={}),
-            patch("wifi_monitor_nitro5.scan_wifi_nmcli", return_value=self._nets()),
-            patch("wifi_monitor_nitro5._get_connected_bssid", return_value=None),
-            patch("wifi_monitor_nitro5.time.sleep", side_effect=KeyboardInterrupt),
-            patch("wifi_monitor_nitro5.sys.exit"),
+            patch("wifimonitor.wifi_monitor_nitro5.Console"),
+            patch("wifimonitor.wifi_monitor_nitro5.Live"),
+            patch("wifimonitor.wifi_monitor_nitro5.load_credentials", return_value={}),
+            patch("wifimonitor.wifi_monitor_nitro5.scan_wifi_nmcli", return_value=self._nets()),
+            patch("wifimonitor.wifi_monitor_nitro5._get_connected_bssid", return_value=None),
+            patch("wifimonitor.wifi_monitor_nitro5.time.sleep", side_effect=KeyboardInterrupt),
+            patch("wifimonitor.wifi_monitor_nitro5.sys.exit"),
         ):
             main()
 
     def test_main_dns_flag_starts_tracker_shows_dns_table(self):
         """main() with --dns starts DnsTracker and updates Live with Group."""
-        from wifi_monitor_nitro5 import main
+        from wifimonitor.wifi_monitor_nitro5 import main
         with (
-            patch("wifi_monitor_nitro5._parse_args", return_value=self._args(dns=True)),
-            patch("wifi_monitor_nitro5.Console"),
-            patch("wifi_monitor_nitro5.Live"),
-            patch("wifi_monitor_nitro5.DnsTracker") as mock_dns_cls,
-            patch("wifi_monitor_nitro5.scan_wifi_nmcli", return_value=self._nets()),
-            patch("wifi_monitor_nitro5._get_connected_bssid", return_value=None),
-            patch("wifi_monitor_nitro5.time.sleep", side_effect=KeyboardInterrupt),
-            patch("wifi_monitor_nitro5.sys.exit"),
+            patch("wifimonitor.wifi_monitor_nitro5._parse_args", return_value=self._args(dns=True)),
+            patch("wifimonitor.wifi_monitor_nitro5.Console"),
+            patch("wifimonitor.wifi_monitor_nitro5.Live"),
+            patch("wifimonitor.wifi_monitor_nitro5.DnsTracker") as mock_dns_cls,
+            patch("wifimonitor.wifi_monitor_nitro5.scan_wifi_nmcli", return_value=self._nets()),
+            patch("wifimonitor.wifi_monitor_nitro5._get_connected_bssid", return_value=None),
+            patch("wifimonitor.wifi_monitor_nitro5.time.sleep", side_effect=KeyboardInterrupt),
+            patch("wifimonitor.wifi_monitor_nitro5.sys.exit"),
         ):
             mock_tracker = MagicMock()
             mock_tracker.start.return_value = True
@@ -2922,16 +2922,16 @@ class TestMain:
 
     def test_main_dns_start_fails_disables_tracker(self):
         """main() disables DNS tracker when start() returns False."""
-        from wifi_monitor_nitro5 import main
+        from wifimonitor.wifi_monitor_nitro5 import main
         with (
-            patch("wifi_monitor_nitro5._parse_args", return_value=self._args(dns=True)),
-            patch("wifi_monitor_nitro5.Console"),
-            patch("wifi_monitor_nitro5.Live"),
-            patch("wifi_monitor_nitro5.DnsTracker") as mock_dns_cls,
-            patch("wifi_monitor_nitro5.scan_wifi_nmcli", return_value=self._nets()),
-            patch("wifi_monitor_nitro5._get_connected_bssid", return_value=None),
-            patch("wifi_monitor_nitro5.time.sleep", side_effect=KeyboardInterrupt),
-            patch("wifi_monitor_nitro5.sys.exit"),
+            patch("wifimonitor.wifi_monitor_nitro5._parse_args", return_value=self._args(dns=True)),
+            patch("wifimonitor.wifi_monitor_nitro5.Console"),
+            patch("wifimonitor.wifi_monitor_nitro5.Live"),
+            patch("wifimonitor.wifi_monitor_nitro5.DnsTracker") as mock_dns_cls,
+            patch("wifimonitor.wifi_monitor_nitro5.scan_wifi_nmcli", return_value=self._nets()),
+            patch("wifimonitor.wifi_monitor_nitro5._get_connected_bssid", return_value=None),
+            patch("wifimonitor.wifi_monitor_nitro5.time.sleep", side_effect=KeyboardInterrupt),
+            patch("wifimonitor.wifi_monitor_nitro5.sys.exit"),
         ):
             mock_tracker = MagicMock()
             mock_tracker.start.return_value = False
@@ -2940,34 +2940,34 @@ class TestMain:
 
     def test_main_debug_flag_sets_up_logging(self):
         """main() with --debug configures logging with FileHandler."""
-        from wifi_monitor_nitro5 import main
+        from wifimonitor.wifi_monitor_nitro5 import main
         # Patch the whole logging module in wifi_monitor_nitro5 so no real handlers
         # are added to the root logger (which would leak a MagicMock across tests).
         with (
-            patch("wifi_monitor_nitro5._parse_args", return_value=self._args(debug=True)),
-            patch("wifi_monitor_nitro5.Console"),
-            patch("wifi_monitor_nitro5.Live"),
-            patch("wifi_monitor_nitro5.scan_wifi_nmcli", return_value=self._nets()),
-            patch("wifi_monitor_nitro5._get_connected_bssid", return_value=None),
-            patch("wifi_monitor_nitro5.logging"),
-            patch("wifi_monitor_nitro5.time.sleep", side_effect=KeyboardInterrupt),
-            patch("wifi_monitor_nitro5.sys.exit"),
+            patch("wifimonitor.wifi_monitor_nitro5._parse_args", return_value=self._args(debug=True)),
+            patch("wifimonitor.wifi_monitor_nitro5.Console"),
+            patch("wifimonitor.wifi_monitor_nitro5.Live"),
+            patch("wifimonitor.wifi_monitor_nitro5.scan_wifi_nmcli", return_value=self._nets()),
+            patch("wifimonitor.wifi_monitor_nitro5._get_connected_bssid", return_value=None),
+            patch("wifimonitor.wifi_monitor_nitro5.logging"),
+            patch("wifimonitor.wifi_monitor_nitro5.time.sleep", side_effect=KeyboardInterrupt),
+            patch("wifimonitor.wifi_monitor_nitro5.sys.exit"),
         ):
             main()
 
     def test_main_monitor_flag_airodump_starts_ok(self):
         """main() with --monitor starts AirodumpScanner; uses it for scanning."""
-        from wifi_monitor_nitro5 import main
+        from wifimonitor.wifi_monitor_nitro5 import main
         with (
-            patch("wifi_monitor_nitro5._parse_args", return_value=self._args(monitor=True)),
-            patch("wifi_monitor_nitro5.Console"),
-            patch("wifi_monitor_nitro5.Live"),
-            patch("wifi_monitor_nitro5.AirodumpScanner") as mock_cls,
-            patch("wifi_monitor_nitro5.scan_wifi_nmcli", return_value=self._nets()),
-            patch("wifi_monitor_nitro5._get_connected_bssid", return_value=None),
-            patch("wifi_monitor_nitro5.atexit.register"),
-            patch("wifi_monitor_nitro5.time.sleep", side_effect=KeyboardInterrupt),
-            patch("wifi_monitor_nitro5.sys.exit"),
+            patch("wifimonitor.wifi_monitor_nitro5._parse_args", return_value=self._args(monitor=True)),
+            patch("wifimonitor.wifi_monitor_nitro5.Console"),
+            patch("wifimonitor.wifi_monitor_nitro5.Live"),
+            patch("wifimonitor.wifi_monitor_nitro5.AirodumpScanner") as mock_cls,
+            patch("wifimonitor.wifi_monitor_nitro5.scan_wifi_nmcli", return_value=self._nets()),
+            patch("wifimonitor.wifi_monitor_nitro5._get_connected_bssid", return_value=None),
+            patch("wifimonitor.wifi_monitor_nitro5.atexit.register"),
+            patch("wifimonitor.wifi_monitor_nitro5.time.sleep", side_effect=KeyboardInterrupt),
+            patch("wifimonitor.wifi_monitor_nitro5.sys.exit"),
         ):
             mock_scanner = MagicMock()
             mock_scanner.start.return_value = (True, None)
@@ -2979,16 +2979,16 @@ class TestMain:
 
     def test_main_monitor_flag_airodump_fails_falls_back(self):
         """main() with --monitor uses nmcli fallback when airodump fails to start."""
-        from wifi_monitor_nitro5 import main
+        from wifimonitor.wifi_monitor_nitro5 import main
         with (
-            patch("wifi_monitor_nitro5._parse_args", return_value=self._args(monitor=True)),
-            patch("wifi_monitor_nitro5.Console"),
-            patch("wifi_monitor_nitro5.Live"),
-            patch("wifi_monitor_nitro5.AirodumpScanner") as mock_cls,
-            patch("wifi_monitor_nitro5.scan_wifi_nmcli", return_value=self._nets()),
-            patch("wifi_monitor_nitro5._get_connected_bssid", return_value=None),
-            patch("wifi_monitor_nitro5.time.sleep", side_effect=KeyboardInterrupt),
-            patch("wifi_monitor_nitro5.sys.exit"),
+            patch("wifimonitor.wifi_monitor_nitro5._parse_args", return_value=self._args(monitor=True)),
+            patch("wifimonitor.wifi_monitor_nitro5.Console"),
+            patch("wifimonitor.wifi_monitor_nitro5.Live"),
+            patch("wifimonitor.wifi_monitor_nitro5.AirodumpScanner") as mock_cls,
+            patch("wifimonitor.wifi_monitor_nitro5.scan_wifi_nmcli", return_value=self._nets()),
+            patch("wifimonitor.wifi_monitor_nitro5._get_connected_bssid", return_value=None),
+            patch("wifimonitor.wifi_monitor_nitro5.time.sleep", side_effect=KeyboardInterrupt),
+            patch("wifimonitor.wifi_monitor_nitro5.sys.exit"),
         ):
             mock_scanner = MagicMock()
             mock_scanner.start.return_value = (False, "monitor_unsupported")
@@ -2997,18 +2997,18 @@ class TestMain:
 
     def test_main_monitor_airodump_exits_mid_run(self):
         """main() falls back to nmcli when airodump exits during a scan cycle."""
-        from wifi_monitor_nitro5 import main
+        from wifimonitor.wifi_monitor_nitro5 import main
         with (
-            patch("wifi_monitor_nitro5._parse_args", return_value=self._args(monitor=True)),
-            patch("wifi_monitor_nitro5.Console"),
-            patch("wifi_monitor_nitro5.Live"),
-            patch("wifi_monitor_nitro5.AirodumpScanner") as mock_cls,
-            patch("wifi_monitor_nitro5.scan_wifi_nmcli", return_value=self._nets()),
-            patch("wifi_monitor_nitro5._get_connected_bssid", return_value=None),
-            patch("wifi_monitor_nitro5.atexit.register"),
-            patch("wifi_monitor_nitro5._LOGGER"),  # prevent handler issues
-            patch("wifi_monitor_nitro5.time.sleep", side_effect=KeyboardInterrupt),
-            patch("wifi_monitor_nitro5.sys.exit"),
+            patch("wifimonitor.wifi_monitor_nitro5._parse_args", return_value=self._args(monitor=True)),
+            patch("wifimonitor.wifi_monitor_nitro5.Console"),
+            patch("wifimonitor.wifi_monitor_nitro5.Live"),
+            patch("wifimonitor.wifi_monitor_nitro5.AirodumpScanner") as mock_cls,
+            patch("wifimonitor.wifi_monitor_nitro5.scan_wifi_nmcli", return_value=self._nets()),
+            patch("wifimonitor.wifi_monitor_nitro5._get_connected_bssid", return_value=None),
+            patch("wifimonitor.wifi_monitor_nitro5.atexit.register"),
+            patch("wifimonitor.wifi_monitor_nitro5._LOGGER"),  # prevent handler issues
+            patch("wifimonitor.wifi_monitor_nitro5.time.sleep", side_effect=KeyboardInterrupt),
+            patch("wifimonitor.wifi_monitor_nitro5.sys.exit"),
         ):
             mock_scanner = MagicMock()
             mock_scanner.start.return_value = (True, None)
