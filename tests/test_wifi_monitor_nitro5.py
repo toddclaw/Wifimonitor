@@ -32,6 +32,11 @@ from wifi_monitor_nitro5 import (
     build_dns_table,
     _parse_args,
     AirodumpScanner,
+    ArpScanner,
+    _get_connected_bssid,
+    _get_subnet,
+    _parse_arp_scan_output,
+    _parse_nmap_output,
 )
 
 
@@ -1511,3 +1516,274 @@ class TestDnsTrackerInjection:
         assert "LC_ALL" in env
         assert len(env) <= 4
         tracker.stop()
+
+
+# ---------------------------------------------------------------------------
+# _parse_arp_scan_output — arp-scan stdout parsing
+# ---------------------------------------------------------------------------
+
+class TestParseArpScanOutput:
+    """_parse_arp_scan_output counts unique responding hosts from arp-scan."""
+
+    SAMPLE_ARP_OUTPUT = (
+        "Interface: wlan0, type: EN10MB, MAC: aa:bb:cc:dd:ee:ff, IPv4: 192.168.1.100\n"
+        "Starting arp-scan 1.9.7 with 256 hosts\n"
+        "192.168.1.1\t00:11:22:33:44:55\tNetgear\n"
+        "192.168.1.50\t22:33:44:55:66:77\tApple Inc\n"
+        "192.168.1.75\t33:44:55:66:77:88\tSamsung\n"
+        "\n"
+        "3 packets received by filter, 0 packets dropped by kernel\n"
+        "Ending arp-scan 1.9.7: 256 hosts scanned in 1.337 seconds. 3 responded\n"
+    )
+
+    def test_counts_host_lines_correctly(self):
+        assert _parse_arp_scan_output(self.SAMPLE_ARP_OUTPUT) == 3
+
+    def test_empty_output_returns_zero(self):
+        assert _parse_arp_scan_output("") == 0
+
+    def test_only_header_lines_returns_zero(self):
+        output = "Starting arp-scan 1.9.7\nEnding arp-scan 1.9.7: 256 hosts\n"
+        assert _parse_arp_scan_output(output) == 0
+
+    def test_single_host_returns_one(self):
+        output = "192.168.1.1\t00:11:22:33:44:55\tRouter\n"
+        assert _parse_arp_scan_output(output) == 1
+
+    def test_mixed_case_mac_counted(self):
+        output = "192.168.1.1\t00:AA:BB:CC:DD:EE\tDevice\n"
+        assert _parse_arp_scan_output(output) == 1
+
+
+# ---------------------------------------------------------------------------
+# _parse_nmap_output — nmap greppable output parsing
+# ---------------------------------------------------------------------------
+
+class TestParseNmapOutput:
+    """_parse_nmap_output counts up hosts from nmap -oG - output."""
+
+    SAMPLE_NMAP_OUTPUT = (
+        "# Nmap 7.93 scan initiated as: nmap -sn -oG - 192.168.1.0/24\n"
+        "Host: 192.168.1.1 (router.local)\tStatus: Up\n"
+        "Host: 192.168.1.50 ()\tStatus: Up\n"
+        "Host: 192.168.1.75 ()\tStatus: Down\n"
+        "# Nmap done: 256 IP addresses (2 hosts up) scanned\n"
+    )
+
+    def test_counts_up_hosts_only(self):
+        assert _parse_nmap_output(self.SAMPLE_NMAP_OUTPUT) == 2
+
+    def test_empty_output_returns_zero(self):
+        assert _parse_nmap_output("") == 0
+
+    def test_only_comment_lines_returns_zero(self):
+        output = "# Nmap 7.93\n# Nmap done\n"
+        assert _parse_nmap_output(output) == 0
+
+    def test_single_up_host_returns_one(self):
+        output = "Host: 192.168.1.1 ()\tStatus: Up\n"
+        assert _parse_nmap_output(output) == 1
+
+    def test_down_hosts_not_counted(self):
+        output = (
+            "Host: 192.168.1.1 ()\tStatus: Down\n"
+            "Host: 192.168.1.2 ()\tStatus: Down\n"
+        )
+        assert _parse_nmap_output(output) == 0
+
+
+# ---------------------------------------------------------------------------
+# _get_connected_bssid — active BSSID detection
+# ---------------------------------------------------------------------------
+
+class TestGetConnectedBssid:
+    """_get_connected_bssid returns the BSSID of the active WiFi connection."""
+
+    def test_returns_active_bssid_lowercased(self):
+        fake = _FakeRunner()
+        fake.set_run_results(subprocess.CompletedProcess(
+            args=[], returncode=0,
+            stdout=r"yes:AA\:BB\:CC\:DD\:EE\:FF" + "\n" + r"no:11\:22\:33\:44\:55\:66",
+            stderr="",
+        ))
+        bssid = _get_connected_bssid(runner=fake)
+        assert bssid == "aa:bb:cc:dd:ee:ff"
+
+    def test_returns_none_when_not_connected(self):
+        fake = _FakeRunner()
+        fake.set_run_results(subprocess.CompletedProcess(
+            args=[], returncode=0,
+            stdout=r"no:AA\:BB\:CC\:DD\:EE\:FF" + "\n",
+            stderr="",
+        ))
+        assert _get_connected_bssid(runner=fake) is None
+
+    def test_returns_none_on_empty_output(self):
+        fake = _FakeRunner()
+        fake.set_run_results(subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="", stderr="",
+        ))
+        assert _get_connected_bssid(runner=fake) is None
+
+    def test_returns_none_on_timeout(self):
+        fake = _FakeRunner()
+        fake.set_run_side_effect(subprocess.TimeoutExpired(cmd=["nmcli"], timeout=10))
+        assert _get_connected_bssid(runner=fake) is None
+
+    def test_returns_none_when_nmcli_not_found(self):
+        fake = _FakeRunner()
+        fake.set_run_side_effect(FileNotFoundError("nmcli not found"))
+        assert _get_connected_bssid(runner=fake) is None
+
+    def test_passes_interface_to_command(self):
+        fake = _FakeRunner()
+        fake.set_run_results(subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="", stderr="",
+        ))
+        _get_connected_bssid(interface="wlan1", runner=fake)
+        cmd, _ = fake.run_calls[0]
+        assert "ifname" in cmd
+        assert "wlan1" in cmd
+
+
+# ---------------------------------------------------------------------------
+# _get_subnet — subnet CIDR detection
+# ---------------------------------------------------------------------------
+
+class TestGetSubnet:
+    """_get_subnet extracts the local subnet CIDR from ip route output."""
+
+    def test_returns_cidr_subnet(self):
+        fake = _FakeRunner()
+        fake.set_run_results(subprocess.CompletedProcess(
+            args=[], returncode=0,
+            stdout="192.168.1.0/24 dev wlan0 proto kernel scope link src 192.168.1.100\n",
+            stderr="",
+        ))
+        assert _get_subnet(runner=fake) == "192.168.1.0/24"
+
+    def test_returns_none_on_empty_output(self):
+        fake = _FakeRunner()
+        fake.set_run_results(subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="", stderr="",
+        ))
+        assert _get_subnet(runner=fake) is None
+
+    def test_returns_none_on_timeout(self):
+        fake = _FakeRunner()
+        fake.set_run_side_effect(subprocess.TimeoutExpired(cmd=["ip"], timeout=5))
+        assert _get_subnet(runner=fake) is None
+
+    def test_returns_none_when_ip_not_found(self):
+        fake = _FakeRunner()
+        fake.set_run_side_effect(FileNotFoundError("ip not found"))
+        assert _get_subnet(runner=fake) is None
+
+    def test_returns_first_matching_subnet(self):
+        fake = _FakeRunner()
+        fake.set_run_results(subprocess.CompletedProcess(
+            args=[], returncode=0,
+            stdout=(
+                "default via 192.168.1.1 dev wlan0\n"
+                "192.168.1.0/24 dev wlan0 proto kernel scope link src 192.168.1.100\n"
+            ),
+            stderr="",
+        ))
+        assert _get_subnet(runner=fake) == "192.168.1.0/24"
+
+
+# ---------------------------------------------------------------------------
+# ArpScanner — ARP-based client detection
+# ---------------------------------------------------------------------------
+
+class TestArpScanner:
+    """ArpScanner detects clients via arp-scan with nmap fallback."""
+
+    def test_scan_returns_host_count_from_arp_scan(self):
+        fake = _FakeRunner()
+        arp_output = (
+            "192.168.1.1\t00:11:22:33:44:55\tRouter\n"
+            "192.168.1.50\t22:33:44:55:66:77\tPhone\n"
+            "Ending arp-scan: 2 responded\n"
+        )
+        fake.set_run_results(subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=arp_output, stderr="",
+        ))
+        scanner = ArpScanner(interface="wlan0", runner=fake)
+        assert scanner.scan() == 2
+
+    def test_scan_falls_back_to_nmap_when_arp_scan_not_found(self):
+        """When arp-scan raises FileNotFoundError, nmap is used instead."""
+        fake = _FakeRunner()
+        # First call (arp-scan) raises FileNotFoundError; second call (ip route) and third (nmap)
+        nmap_output = (
+            "Host: 192.168.1.1 ()\tStatus: Up\n"
+            "Host: 192.168.1.50 ()\tStatus: Up\n"
+        )
+        ip_route_output = "192.168.1.0/24 dev wlan0 proto kernel scope link src 192.168.1.100\n"
+        fake._run_results = [
+            # arp-scan attempt raises FileNotFoundError (simulated via side effect below)
+        ]
+        # Use a custom runner that raises on arp-scan and returns for ip+nmap
+        class _ArpNotFoundRunner:
+            def __init__(self):
+                self._calls = 0
+            def run(self, cmd, **kwargs):
+                self._calls += 1
+                if "arp-scan" in cmd:
+                    raise FileNotFoundError("arp-scan not found")
+                if "ip" in cmd:
+                    return subprocess.CompletedProcess(
+                        args=cmd, returncode=0, stdout=ip_route_output, stderr=""
+                    )
+                # nmap
+                return subprocess.CompletedProcess(
+                    args=cmd, returncode=0, stdout=nmap_output, stderr=""
+                )
+        scanner = ArpScanner(interface="wlan0", runner=_ArpNotFoundRunner())
+        assert scanner.scan() == 2
+
+    def test_scan_returns_zero_when_both_tools_unavailable(self):
+        """When both arp-scan and nmap fail, scan returns 0."""
+        class _NothingFoundRunner:
+            def run(self, cmd, **kwargs):
+                raise FileNotFoundError("not found")
+        scanner = ArpScanner(runner=_NothingFoundRunner())
+        assert scanner.scan() == 0
+
+    def test_scan_returns_zero_on_timeout(self):
+        fake = _FakeRunner()
+        fake.set_run_side_effect(subprocess.TimeoutExpired(cmd=["arp-scan"], timeout=30))
+        scanner = ArpScanner(runner=fake)
+        assert scanner.scan() == 0
+
+    def test_scan_passes_interface_flag_to_arp_scan(self):
+        fake = _FakeRunner()
+        fake.set_run_results(subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="", stderr="",
+        ))
+        scanner = ArpScanner(interface="wlan1", runner=fake)
+        scanner.scan()
+        cmd, _ = fake.run_calls[0]
+        assert "arp-scan" in cmd
+        assert "-I" in cmd
+        assert "wlan1" in cmd
+
+
+# ---------------------------------------------------------------------------
+# _parse_args — --arp flag
+# ---------------------------------------------------------------------------
+
+class TestParseArgsArpFlag:
+    def test_arp_flag_default_false(self):
+        args = _parse_args([])
+        assert args.arp is False
+
+    def test_arp_flag_set(self):
+        args = _parse_args(["--arp"])
+        assert args.arp is True
+
+    def test_arp_flag_with_interface(self):
+        args = _parse_args(["--arp", "-i", "wlan0"])
+        assert args.arp is True
+        assert args.interface == "wlan0"
