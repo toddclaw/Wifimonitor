@@ -12,6 +12,7 @@ is planned for a future phase.
 Wifimonitor/
 ├── CLAUDE.md
 ├── README.md
+├── WORK_IN_PROGRESS.md        # Feature blueprints and running commentary
 ├── wifi_monitor_nitro5.py     # Laptop entry point (Rich TUI, nmcli)
 ├── wifi_common.py             # Shared: Network dataclass, signal/color helpers,
 │                              #         airodump-ng CSV parser (Pi, future)
@@ -21,8 +22,8 @@ Wifimonitor/
 ├── requirements-dev.txt       # Dev/CI tooling (pytest, ruff, mypy, pip-audit)
 ├── .github/workflows/ci.yml   # CI pipeline (test, lint, security)
 ├── tests/
-│   ├── test_wifi_monitor_nitro5.py   # nmcli parsing, rendering, scanning tests
-│   └── test_wifi_common.py           # Helpers, airodump CSV parsing tests
+│   ├── test_wifi_monitor_nitro5.py   # 211 tests — parsing, rendering, scanning, ARP, connected indicator
+│   └── test_wifi_common.py           #  71 tests — helpers, airodump CSV, validation, colors, protocol
 ├── .claude/
 │   └── agents/
 │       ├── architect-agent.md
@@ -101,7 +102,7 @@ Reference the agent at the start of a session to set its role:
 ## Test Commands
 
 ```bash
-# Run all 222 tests
+# Run all 282 tests
 pytest tests/ -v
 
 # Run with coverage

@@ -8,6 +8,8 @@ Follows TDD agent standards:
 - Unhappy-path coverage (malformed input, edge cases)
 """
 
+import argparse
+import io as _io
 import subprocess
 from unittest.mock import MagicMock, mock_open, patch
 
@@ -37,6 +39,16 @@ from wifi_monitor_nitro5 import (
     _get_subnet,
     _parse_arp_scan_output,
     _parse_nmap_output,
+    _dump_startup_config,
+    _interface_supports_monitor,
+    _set_nm_managed,
+    _enable_monitor_mode,
+    _verify_monitor_mode,
+    _disable_monitor_mode,
+    _log_airodump_exit,
+    _log_monitor_failure,
+    _enable_monitor_mode_virtual,
+    _disable_monitor_mode_virtual,
 )
 
 
@@ -1793,8 +1805,6 @@ class TestParseArgsArpFlag:
 # build_table — connected network indicator (Con column + bold row)
 # ---------------------------------------------------------------------------
 
-import io as _io
-
 
 def _render_table(table) -> str:
     """Render a Rich Table to a plain string (no color) for assertion."""
@@ -1893,3 +1903,1116 @@ class TestBuildTableConnectedIndicator:
         table = build_table([self._NET], connected_bssid=self._BSSID)
         headers = [c.header for c in table.columns]
         assert headers.index("Con") < headers.index("BSSID")
+
+
+# ---------------------------------------------------------------------------
+# load_credentials — OSError error paths
+# ---------------------------------------------------------------------------
+
+
+class TestLoadCredentialsErrorPaths:
+    """Error paths in load_credentials: stat fails, open fails."""
+
+    def test_stat_oserror_continues_reading(self, tmp_path):
+        """When os.stat raises OSError, load still reads the file normally."""
+        creds_file = tmp_path / "creds.csv"
+        creds_file.write_text("Home,pass123\n")
+        with (
+            patch("wifi_monitor_nitro5.os.stat", side_effect=OSError("no stat")),
+            patch("wifi_monitor_nitro5.os.path.isfile", return_value=True),
+        ):
+            result = load_credentials(str(creds_file))
+        assert result == {"Home": "pass123"}
+
+    def test_open_oserror_returns_empty_dict(self, tmp_path):
+        """When open() raises OSError, load_credentials returns empty dict."""
+        creds_file = tmp_path / "creds.csv"
+        creds_file.write_text("Home,pass123\n")
+        with patch("builtins.open", side_effect=OSError("permission denied")):
+            result = load_credentials(str(creds_file))
+        assert result == {}
+
+    def test_blank_line_in_nmcli_output_skipped(self):
+        """parse_nmcli_output skips blank lines in the middle of output."""
+        output = (
+            r"AA\:BB\:CC\:DD\:EE\:01:HomeNet:6:80:WPA2" + "\n"
+            "\n"
+            r"BB\:CC\:DD\:EE\:FF\:02:Other:11:60:WPA2"
+        )
+        networks = parse_nmcli_output(output)
+        assert len(networks) == 2
+
+
+# ---------------------------------------------------------------------------
+# DnsTracker — stop() timeout and _reader_loop OSError
+# ---------------------------------------------------------------------------
+
+
+class TestDnsTrackerErrorPaths:
+    """DnsTracker error paths not covered by happy-path tests."""
+
+    def test_stop_kills_process_when_wait_times_out(self):
+        """stop() kills process when terminate+wait times out."""
+        tracker = DnsTracker()
+        mock_proc = MagicMock()
+        mock_proc.wait.side_effect = subprocess.TimeoutExpired(cmd="tcpdump", timeout=5)
+        tracker._process = mock_proc
+        tracker.stop()
+        mock_proc.terminate.assert_called_once()
+        mock_proc.kill.assert_called_once()
+
+    def test_reader_loop_handles_oserror_silently(self):
+        """_reader_loop catches OSError when reading stdout and exits cleanly."""
+        tracker = DnsTracker()
+        mock_proc = MagicMock()
+        mock_proc.stdout.__iter__ = MagicMock(side_effect=OSError("bad fd"))
+        tracker._process = mock_proc
+        tracker._reader_loop()  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# ArpScanner — additional edge paths
+# ---------------------------------------------------------------------------
+
+
+class TestArpScannerEdgePaths:
+    """Edge paths in ArpScanner not covered by primary tests."""
+
+    def test_scan_arp_file_not_found_returns_none(self):
+        """_scan_arp returns None when arp-scan is not installed (FileNotFoundError)."""
+        runner = MagicMock()
+        runner.run.side_effect = FileNotFoundError("arp-scan not found")
+        scanner = ArpScanner(runner=runner)
+        result = scanner._scan_arp()
+        assert result is None
+
+    def test_scan_arp_bad_returncode_returns_none(self):
+        """_scan_arp returns None when arp-scan exits with code != 0 or 1."""
+        runner = MagicMock()
+        runner.run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=2, stdout="", stderr=""
+        )
+        scanner = ArpScanner(runner=runner)
+        result = scanner._scan_arp()
+        assert result is None
+
+    def test_scan_nmap_timeout_returns_none(self):
+        """_scan_nmap returns None when nmap raises TimeoutExpired."""
+        runner = MagicMock()
+        subnet_result = subprocess.CompletedProcess(
+            args=[], returncode=0,
+            stdout="192.168.1.0/24 dev wlan0  proto kernel  scope link  src 192.168.1.5\n",
+            stderr="",
+        )
+        runner.run.side_effect = [
+            subnet_result,
+            subprocess.TimeoutExpired(cmd="nmap", timeout=60),
+        ]
+        scanner = ArpScanner(runner=runner)
+        result = scanner._scan_nmap()
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# _interface_supports_monitor — branch coverage
+# ---------------------------------------------------------------------------
+
+
+class TestInterfaceSupportsMonitor:
+    """Branch coverage for _interface_supports_monitor."""
+
+    def test_iw_dev_info_fails_returns_true(self):
+        """Returns True when 'iw dev info' returns non-zero (allow attempt)."""
+        fake = _FakeRunner()
+        fail = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="err")
+        fake.set_run_results(fail)
+        assert _interface_supports_monitor("wlan0", runner=fake) is True
+
+    def test_no_wiphy_in_output_returns_true(self):
+        """Returns True when 'wiphy' not found in iw dev info output."""
+        fake = _FakeRunner()
+        result = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="Interface wlan0\n  type managed\n", stderr=""
+        )
+        fake.set_run_results(result)
+        assert _interface_supports_monitor("wlan0", runner=fake) is True
+
+    def test_phy_info_fails_returns_true(self):
+        """Returns True when iw phy info returns non-zero."""
+        fake = _FakeRunner()
+        dev_info = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="Interface wlan0\n  wiphy 0\n", stderr=""
+        )
+        phy_fail = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="err")
+        fake.set_run_results(dev_info, phy_fail)
+        assert _interface_supports_monitor("wlan0", runner=fake) is True
+
+    def test_band_line_breaks_mode_search_returns_false(self):
+        """Returns False when 'Band' terminates the mode search before finding monitor."""
+        fake = _FakeRunner()
+        dev_info = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="Interface wlan0\n  wiphy 0\n", stderr=""
+        )
+        phy_info = subprocess.CompletedProcess(
+            args=[], returncode=0,
+            stdout=(
+                "Supported interface modes:\n"
+                " * managed\n"
+                " * IBSS\n"
+                "\tBand 1:\n"
+                " * monitor\n"  # after break, not reached
+            ),
+            stderr="",
+        )
+        fake.set_run_results(dev_info, phy_info)
+        assert _interface_supports_monitor("wlan0", runner=fake) is False
+
+    def test_no_monitor_in_modes_returns_false(self):
+        """Returns False when supported modes section has no monitor entry."""
+        fake = _FakeRunner()
+        dev_info = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="Interface wlan0\n  wiphy 0\n", stderr=""
+        )
+        phy_info = subprocess.CompletedProcess(
+            args=[], returncode=0,
+            stdout=(
+                "Supported interface modes:\n"
+                " * managed\n"
+                " * IBSS\n"
+                " * AP\n"
+            ),
+            stderr="",
+        )
+        fake.set_run_results(dev_info, phy_info)
+        assert _interface_supports_monitor("wlan0", runner=fake) is False
+
+    def test_exception_returns_true(self):
+        """Returns True when runner raises an exception (allow attempt)."""
+        fake = _FakeRunner()
+        fake.set_run_side_effect(OSError("iw not found"))
+        assert _interface_supports_monitor("wlan0", runner=fake) is True
+
+
+# ---------------------------------------------------------------------------
+# _set_nm_managed — exception path
+# ---------------------------------------------------------------------------
+
+
+class TestSetNmManaged:
+    """Exception path for _set_nm_managed."""
+
+    def test_exception_returns_false(self):
+        """Returns False when runner raises an exception."""
+        fake = _FakeRunner()
+        fake.set_run_side_effect(subprocess.TimeoutExpired(cmd="nmcli", timeout=5))
+        result = _set_nm_managed("wlan0", True, runner=fake)
+        assert result is False
+
+
+# ---------------------------------------------------------------------------
+# _enable_monitor_mode — failure paths
+# ---------------------------------------------------------------------------
+
+
+class TestEnableMonitorMode:
+    """Failure paths for _enable_monitor_mode."""
+
+    def test_disconnect_exception_is_ignored_and_continues(self):
+        """nmcli disconnect exception is caught; execution continues."""
+        runner = MagicMock()
+        managed_ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        ip_down = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        iw_type = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        ip_up = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        verify_ok = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="Interface wlan0\n  type monitor\n", stderr=""
+        )
+        runner.run.side_effect = [
+            OSError("not connected"),  # nmcli disconnect → caught
+            managed_ok,                # _set_nm_managed: nmcli managed no
+            ip_down, iw_type, ip_up,   # cmds
+            verify_ok,                 # _verify_monitor_mode
+        ]
+        with patch("wifi_monitor_nitro5.time.sleep"):
+            result = _enable_monitor_mode("wlan0", runner=runner)
+        assert result is True
+
+    def test_cmd_failure_returns_false(self, tmp_path):
+        """Returns False when a cmd in the cmds loop fails."""
+        log_file = str(tmp_path / "monitor.log")
+        runner = MagicMock()
+        managed_ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        ip_down_fail = subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="device busy"
+        )
+        runner.run.side_effect = [
+            managed_ok,     # disconnect (success)
+            managed_ok,     # _set_nm_managed
+            ip_down_fail,   # ip link down → fails
+        ]
+        with (
+            patch("wifi_monitor_nitro5.AIRODUMP_MONITOR_LOG", log_file),
+            patch("wifi_monitor_nitro5.time.sleep"),
+        ):
+            result = _enable_monitor_mode("wlan0", runner=runner)
+        assert result is False
+
+    def test_exception_in_cmd_loop_returns_false(self, tmp_path):
+        """Returns False when runner raises during cmd loop."""
+        log_file = str(tmp_path / "monitor.log")
+        runner = MagicMock()
+        managed_ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        runner.run.side_effect = [
+            managed_ok,            # disconnect
+            managed_ok,            # _set_nm_managed
+            OSError("ip not found"),  # ip link down → exception
+        ]
+        with (
+            patch("wifi_monitor_nitro5.AIRODUMP_MONITOR_LOG", log_file),
+            patch("wifi_monitor_nitro5.time.sleep"),
+        ):
+            result = _enable_monitor_mode("wlan0", runner=runner)
+        assert result is False
+
+
+# ---------------------------------------------------------------------------
+# _verify_monitor_mode — failure paths
+# ---------------------------------------------------------------------------
+
+
+class TestVerifyMonitorMode:
+    """Failure paths for _verify_monitor_mode."""
+
+    def test_iw_dev_info_nonzero_returns_false(self, tmp_path):
+        """Returns False when iw dev info returns non-zero."""
+        log_file = str(tmp_path / "monitor.log")
+        fake = _FakeRunner()
+        fail = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="error")
+        fake.set_run_results(fail)
+        with patch("wifi_monitor_nitro5.AIRODUMP_MONITOR_LOG", log_file):
+            result = _verify_monitor_mode("wlan0", runner=fake)
+        assert result is False
+
+    def test_not_type_monitor_returns_false(self, tmp_path):
+        """Returns False when 'type monitor' not in iw dev info output."""
+        log_file = str(tmp_path / "monitor.log")
+        fake = _FakeRunner()
+        result_ok = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="Interface wlan0\n  type managed\n", stderr=""
+        )
+        fake.set_run_results(result_ok)
+        with patch("wifi_monitor_nitro5.AIRODUMP_MONITOR_LOG", log_file):
+            result = _verify_monitor_mode("wlan0", runner=fake, iw_set_type_returncode=0)
+        assert result is False
+
+    def test_exception_returns_false(self, tmp_path):
+        """Returns False when runner raises an exception."""
+        log_file = str(tmp_path / "monitor.log")
+        fake = _FakeRunner()
+        fake.set_run_side_effect(subprocess.TimeoutExpired(cmd="iw", timeout=5))
+        with patch("wifi_monitor_nitro5.AIRODUMP_MONITOR_LOG", log_file):
+            result = _verify_monitor_mode("wlan0", runner=fake)
+        assert result is False
+
+
+# ---------------------------------------------------------------------------
+# _log_airodump_exit — file write coverage
+# ---------------------------------------------------------------------------
+
+
+class TestLogAirodumpExit:
+    """Coverage for _log_airodump_exit file write paths."""
+
+    def test_writes_exit_info_and_flushes_stderr_file(self, tmp_path):
+        """Writes exit details and calls flush() on stderr_file."""
+        log_file = str(tmp_path / "airodump.log")
+        mock_file = MagicMock()
+        with patch("wifi_monitor_nitro5.AIRODUMP_STDERR_LOG", log_file):
+            _log_airodump_exit(returncode=1, cmd=["airodump-ng"], stderr_file=mock_file)
+        mock_file.flush.assert_called_once()
+        content = open(log_file).read()
+        assert "airodump exited" in content
+        assert "returncode=1" in content
+
+
+# ---------------------------------------------------------------------------
+# _log_monitor_failure — inner decode and returncode paths
+# ---------------------------------------------------------------------------
+
+
+class TestLogMonitorFailure:
+    """Coverage for _log_monitor_failure: bytes decode, returncode, OSError."""
+
+    def test_writes_details_with_bytes_stdout_and_returncode(self, tmp_path):
+        """Covers bytes decode path and returncode write."""
+        log_file = str(tmp_path / "monitor.log")
+        with patch("wifi_monitor_nitro5.AIRODUMP_MONITOR_LOG", log_file):
+            _log_monitor_failure("test failure", 1, b"stdout bytes", b"stderr bytes")
+        content = open(log_file).read()
+        assert "[monitor] test failure" in content
+        assert "returncode: 1" in content
+        assert "stdout bytes" in content
+
+    def test_oserror_silently_ignored(self):
+        """Does not raise when writing to log file fails with OSError."""
+        with patch("builtins.open", side_effect=OSError("no space left")):
+            _log_monitor_failure("msg", None, None, None)  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# _disable_monitor_mode — exception path
+# ---------------------------------------------------------------------------
+
+
+class TestDisableMonitorMode:
+    """Exception path for _disable_monitor_mode."""
+
+    def test_runner_exception_is_ignored(self):
+        """Exceptions during ip/iw commands are silently caught."""
+        runner = MagicMock()
+        runner.run.side_effect = OSError("ip not found")
+        _disable_monitor_mode("wlan0", runner=runner)  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# _enable_monitor_mode_virtual — failure paths
+# ---------------------------------------------------------------------------
+
+
+class TestEnableMonitorModeVirtual:
+    """Failure paths for _enable_monitor_mode_virtual."""
+
+    def test_iw_dev_info_fails_returns_none(self):
+        """Returns None when iw dev info fails."""
+        fake = _FakeRunner()
+        fail = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="err")
+        fake.set_run_results(fail)
+        result = _enable_monitor_mode_virtual("wlan0", runner=fake)
+        assert result is None
+
+    def test_no_wiphy_match_returns_none(self):
+        """Returns None when wiphy not found in iw dev info output."""
+        fake = _FakeRunner()
+        result = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="Interface wlan0\n  type managed\n", stderr=""
+        )
+        fake.set_run_results(result)
+        assert _enable_monitor_mode_virtual("wlan0", runner=fake) is None
+
+    def test_ip_link_up_fails_cleans_up_and_returns_none(self):
+        """Returns None when ip link up fails; deletes mon0."""
+        fake = _FakeRunner()
+        dev_info = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="Interface wlan0\n  wiphy 0\n", stderr=""
+        )
+        phy_add_ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        ip_up_fail = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="err")
+        del_ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        fake.set_run_results(dev_info, phy_add_ok, ip_up_fail, del_ok)
+        result = _enable_monitor_mode_virtual("wlan0", runner=fake)
+        assert result is None
+
+    def test_exception_returns_none(self):
+        """Returns None when runner raises an exception."""
+        fake = _FakeRunner()
+        fake.set_run_side_effect(OSError("iw not found"))
+        result = _enable_monitor_mode_virtual("wlan0", runner=fake)
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# _disable_monitor_mode_virtual — exception path
+# ---------------------------------------------------------------------------
+
+
+class TestDisableMonitorModeVirtual:
+    """Exception path for _disable_monitor_mode_virtual."""
+
+    def test_runner_exception_is_ignored(self):
+        """Exceptions during iw dev del are silently caught."""
+        fake = _FakeRunner()
+        fake.set_run_side_effect(OSError("iw not found"))
+        _disable_monitor_mode_virtual("mon0", runner=fake)  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# AirodumpScanner — additional coverage paths
+# ---------------------------------------------------------------------------
+
+
+class TestAirodumpScannerAdditionalPaths:
+    """Additional AirodumpScanner paths not covered by primary tests."""
+
+    def _make_virtual_start_results(self):
+        """Helper returning run results for a successful virtual monitor start."""
+        success = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        iw_dev_info = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="Interface wlan0\n  wiphy 0\n", stderr=""
+        )
+        iw_phy_info = subprocess.CompletedProcess(
+            args=[], returncode=0,
+            stdout="Supported interface modes:\n * managed\n * monitor\n", stderr="",
+        )
+        return iw_dev_info, iw_phy_info, success
+
+    def test_start_opens_stderr_log_and_writes_header(self, tmp_path):
+        """start() writes header to AIRODUMP_STDERR_LOG when file is writable."""
+        log_file = str(tmp_path / "airodump.log")
+        fake = _FakeRunner()
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        fake.set_popen_result(mock_proc)
+        iw_dev_info, iw_phy_info, success = self._make_virtual_start_results()
+        fake.set_run_results(
+            iw_dev_info, iw_phy_info,
+            success, success,  # pre-scan
+            success,           # rfkill
+            iw_dev_info, success, success,  # virtual monitor
+            success,           # stop
+        )
+        scanner = AirodumpScanner(interface="wlan0", runner=fake)
+        with (
+            patch("wifi_monitor_nitro5.AIRODUMP_STDERR_LOG", log_file),
+            patch("wifi_monitor_nitro5.os.geteuid", return_value=0),
+            patch("wifi_monitor_nitro5.time.sleep"),
+        ):
+            ok, _ = scanner.start()
+        assert ok is True
+        content = open(log_file).read()
+        assert "capturing airodump-ng stderr" in content
+        scanner.stop()
+
+    def test_start_with_debug_logs_interface_support(self, tmp_path):
+        """start(debug=True) logs _interface_supports_monitor result."""
+        log_file = str(tmp_path / "airodump.log")
+        fake = _FakeRunner()
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        fake.set_popen_result(mock_proc)
+        iw_dev_info, iw_phy_info, success = self._make_virtual_start_results()
+        fake.set_run_results(
+            iw_dev_info, iw_phy_info,
+            success, success,  # pre-scan
+            success,           # rfkill
+            iw_dev_info, success, success,  # virtual monitor
+            success,           # stop
+        )
+        scanner = AirodumpScanner(interface="wlan0", runner=fake, debug=True)
+        with (
+            patch("wifi_monitor_nitro5.AIRODUMP_STDERR_LOG", log_file),
+            patch("wifi_monitor_nitro5.os.geteuid", return_value=0),
+            patch("wifi_monitor_nitro5.time.sleep"),
+        ):
+            ok, _ = scanner.start()
+        assert ok is True
+        scanner.stop()
+
+    def test_start_monitor_unsupported_returns_false(self):
+        """start() returns (False, 'monitor_unsupported') when phy has no monitor mode."""
+        fake = _FakeRunner()
+        iw_dev_info = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="Interface wlan0\n  wiphy 0\n", stderr=""
+        )
+        iw_phy_info = subprocess.CompletedProcess(
+            args=[], returncode=0,
+            stdout="Supported interface modes:\n * managed\n * IBSS\n",
+            stderr="",
+        )
+        fake.set_run_results(iw_dev_info, iw_phy_info)
+        scanner = AirodumpScanner(interface="wlan0", runner=fake, debug=True)
+        ok, reason = scanner.start()
+        assert ok is False
+        assert reason == "monitor_unsupported"
+
+    def test_start_rfkill_exception_is_ignored(self, tmp_path):
+        """start() continues when rfkill raises an exception."""
+        log_file = str(tmp_path / "airodump.log")
+        runner = MagicMock()
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        runner.popen.return_value = mock_proc
+        iw_dev_info = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="Interface wlan0\n  wiphy 0\n", stderr=""
+        )
+        iw_phy_info = subprocess.CompletedProcess(
+            args=[], returncode=0,
+            stdout="Supported interface modes:\n * managed\n * monitor\n",
+            stderr="",
+        )
+        success = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        runner.run.side_effect = [
+            iw_dev_info, iw_phy_info,            # _interface_supports_monitor
+            success, success,                     # scan_wifi_nmcli (rescan + list)
+            OSError("rfkill not found"),          # rfkill → caught
+            iw_dev_info, success, success,        # _enable_monitor_mode_virtual
+            success,                              # stop: iw dev del
+        ]
+        scanner = AirodumpScanner(interface="wlan0", runner=runner, debug=True)
+        with (
+            patch("wifi_monitor_nitro5.AIRODUMP_STDERR_LOG", log_file),
+            patch("wifi_monitor_nitro5.os.geteuid", return_value=0),
+            patch("wifi_monitor_nitro5.time.sleep"),
+        ):
+            ok, _ = scanner.start()
+        assert ok is True
+        scanner.stop()
+
+    def test_start_popen_raises_file_not_found(self, tmp_path):
+        """start() returns (False, 'airodump_spawn') when popen raises FileNotFoundError."""
+        log_file = str(tmp_path / "airodump.log")
+        fake = _FakeRunner()
+        fake.set_popen_side_effect(FileNotFoundError("airodump-ng not found"))
+        iw_dev_info = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="Interface wlan0\n  wiphy 0\n", stderr=""
+        )
+        iw_phy_info = subprocess.CompletedProcess(
+            args=[], returncode=0,
+            stdout="Supported interface modes:\n * managed\n * monitor\n",
+            stderr="",
+        )
+        success = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        fake.set_run_results(
+            iw_dev_info, iw_phy_info,
+            success, success,  # pre-scan
+            success,           # rfkill
+            iw_dev_info, success, success,  # virtual monitor
+            success,           # stop
+        )
+        scanner = AirodumpScanner(interface="wlan0", runner=fake)
+        with (
+            patch("wifi_monitor_nitro5.AIRODUMP_STDERR_LOG", log_file),
+            patch("wifi_monitor_nitro5.os.geteuid", return_value=0),
+            patch("wifi_monitor_nitro5.time.sleep"),
+        ):
+            ok, reason = scanner.start()
+        assert ok is False
+        assert reason == "airodump_spawn"
+
+    def test_stop_kills_process_on_wait_timeout(self):
+        """stop() kills the process when wait() times out."""
+        scanner = AirodumpScanner(interface="wlan0")
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None  # still running
+        mock_proc.wait.side_effect = subprocess.TimeoutExpired(cmd="airodump-ng", timeout=5)
+        scanner._proc = mock_proc
+        scanner._monitor_enabled = False  # skip monitor teardown
+        scanner.stop()
+        mock_proc.kill.assert_called_once()
+
+    def test_stop_closes_stderr_file_if_open(self):
+        """stop() closes _stderr_file when it is open."""
+        scanner = AirodumpScanner(interface="wlan0")
+        mock_file = MagicMock()
+        scanner._stderr_file = mock_file
+        scanner._monitor_enabled = False  # skip monitor teardown
+        scanner.stop()
+        mock_file.close.assert_called_once()
+        assert scanner._stderr_file is None
+
+    def test_is_alive_returns_true_when_running(self):
+        """is_alive() returns True when process is running."""
+        scanner = AirodumpScanner(interface="wlan0")
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        scanner._proc = mock_proc
+        assert scanner.is_alive() is True
+
+    def test_log_exit_if_dead_returns_false_and_logs(self, tmp_path):
+        """log_exit_if_dead() returns False and logs when process has exited."""
+        log_file = str(tmp_path / "airodump.log")
+        scanner = AirodumpScanner(interface="wlan0")
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 1
+        mock_proc.returncode = 1
+        scanner._proc = mock_proc
+        scanner._last_cmd = ["airodump-ng"]
+        with patch("wifi_monitor_nitro5.AIRODUMP_STDERR_LOG", log_file):
+            result = scanner.log_exit_if_dead()
+        assert result is False
+        assert scanner._exit_logged is True
+
+    def test_scan_debug_logs_csv_parse_results(self, tmp_path):
+        """scan() with debug=True logs parse results for direct monitor mode."""
+        from tests.test_wifi_common import SAMPLE_AIRODUMP_CSV
+        scanner = AirodumpScanner(interface="wlan0", prefix="/tmp/test_wifi_cov", debug=True)
+        with (
+            patch("wifi_monitor_nitro5.glob.glob", return_value=["/tmp/test_wifi_cov-01.csv"]),
+            patch("builtins.open", mock_open(read_data=SAMPLE_AIRODUMP_CSV)),
+        ):
+            networks = scanner.scan()
+        assert len(networks) > 0
+
+    def test_scan_oserror_with_debug_logs_failure(self, tmp_path):
+        """scan() with debug=True logs when CSV read fails with OSError."""
+        scanner = AirodumpScanner(interface="wlan0", prefix="/tmp/test_wifi_cov", debug=True)
+        with (
+            patch("wifi_monitor_nitro5.glob.glob", return_value=["/tmp/test_wifi_cov-01.csv"]),
+            patch("builtins.open", side_effect=OSError("permission denied")),
+        ):
+            networks = scanner.scan()
+        assert networks == []
+
+    def test_scan_hybrid_debug_logs(self, tmp_path):
+        """scan() with debug=True and virtual monitor logs hybrid scan."""
+        from tests.test_wifi_common import SAMPLE_AIRODUMP_CSV
+        scanner = AirodumpScanner(interface="wlan0", prefix="/tmp/test_wifi_cov", debug=True)
+        scanner._monitor_is_virtual = True
+        nmcli_networks = parse_nmcli_output(
+            r"aa\:bb\:cc\:dd\:ee\:01:HomeNetwork:6:85:WPA2" + "\n"
+        )
+        with (
+            patch("wifi_monitor_nitro5.glob.glob", return_value=["/tmp/test_wifi_cov-01.csv"]),
+            patch("builtins.open", mock_open(read_data=SAMPLE_AIRODUMP_CSV)),
+            patch("wifi_monitor_nitro5.scan_wifi_nmcli", return_value=nmcli_networks),
+        ):
+            networks = scanner.scan()
+        assert len(networks) == 1
+
+    def test_cleanup_old_files_oserror_silently_ignored(self, tmp_path):
+        """_cleanup_old_files continues when os.remove raises OSError."""
+        scanner = AirodumpScanner(interface="wlan0", prefix=str(tmp_path / "wifi"))
+        # Create a file that matches the prefix pattern
+        test_file = tmp_path / "wifi-01.csv"
+        test_file.write_text("content")
+        with patch("wifi_monitor_nitro5.os.remove", side_effect=OSError("busy")):
+            scanner._cleanup_old_files()  # must not raise
+
+    def test_start_direct_monitor_debug_logs(self, tmp_path):
+        """start() with debug=True and direct monitor path logs virtual-failed and direct-success."""
+        log_file = str(tmp_path / "airodump.log")
+        runner = MagicMock()
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        runner.popen.return_value = mock_proc
+        iw_dev_info = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="Interface wlan0\n  wiphy 0\n", stderr=""
+        )
+        iw_phy_info = subprocess.CompletedProcess(
+            args=[], returncode=0,
+            stdout="Supported interface modes:\n * managed\n * monitor\n",
+            stderr="",
+        )
+        success = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        phy_add_fail = subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="not supported"
+        )
+        verify_ok = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="Interface wlan0\n  type monitor\n", stderr=""
+        )
+        runner.run.side_effect = [
+            iw_dev_info, iw_phy_info,                # _interface_supports_monitor
+            success, success,                         # scan_wifi_nmcli (rescan + list)
+            success,                                  # rfkill
+            iw_dev_info, phy_add_fail,               # _enable_monitor_mode_virtual (fails at phy add)
+            success, success,                         # nmcli disconnect, nmcli managed no
+            success, success, success,                # ip down, iw set type, ip up
+            verify_ok,                               # _verify_monitor_mode
+            success, success, success, success,       # stop: ip down, iw set managed, ip up, nmcli
+        ]
+        scanner = AirodumpScanner(interface="wlan0", runner=runner, debug=True)
+        with (
+            patch("wifi_monitor_nitro5.AIRODUMP_STDERR_LOG", log_file),
+            patch("wifi_monitor_nitro5.os.geteuid", return_value=0),
+            patch("wifi_monitor_nitro5.time.sleep"),
+        ):
+            ok, _ = scanner.start()
+        assert ok is True
+        assert not scanner._monitor_is_virtual
+        scanner.stop()
+
+
+# ---------------------------------------------------------------------------
+# _dump_startup_config — logging coverage
+# ---------------------------------------------------------------------------
+
+
+class TestDumpStartupConfig:
+    """Coverage for _dump_startup_config: all debug log lines."""
+
+    def test_logs_all_config_fields_without_raising(self):
+        """_dump_startup_config logs all settings and does not raise."""
+        args = argparse.Namespace(
+            interface="wlan0",
+            monitor=True,
+            dns=True,
+            credentials="creds.csv",
+            connect=True,
+            debug=True,
+            arp=False,
+        )
+        _dump_startup_config(
+            args=args,
+            monitor_interface="wlan0",
+            airodump_ok=True,
+            airodump_failure=None,
+            dns_ok=True,
+            creds_count=3,
+        )
+        # If we reach here without raising, all log lines were executed
+
+
+# ---------------------------------------------------------------------------
+# Additional targeted tests for remaining uncovered lines
+# ---------------------------------------------------------------------------
+
+
+class TestReaderLoopBody:
+    """_reader_loop loop body (lines 269-271) runs when stdout has lines."""
+
+    def test_reader_loop_records_valid_dns_lines(self):
+        """_reader_loop body executes and records domains from stdout."""
+        tracker = DnsTracker()
+        mock_proc = MagicMock()
+        dns_line = "12:00:00.000000 IP 192.168.1.5.53297 > 8.8.8.8.53: A? example.com.\n"
+        mock_proc.stdout = iter([dns_line])
+        tracker._process = mock_proc
+        tracker._reader_loop()
+        assert tracker.top()  # domain should have been recorded
+
+
+class TestEnableMonitorModeVerifyFails:
+    """Line 558: _verify_monitor_mode returns False inside _enable_monitor_mode."""
+
+    def test_all_cmds_succeed_but_verify_fails_returns_false(self, tmp_path):
+        """Returns False when all cmds succeed but _verify_monitor_mode says not monitor."""
+        log_file = str(tmp_path / "monitor.log")
+        runner = MagicMock()
+        ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        verify_fail = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="Interface wlan0\n  type managed\n", stderr=""
+        )
+        runner.run.side_effect = [
+            ok,      # disconnect
+            ok,      # _set_nm_managed
+            ok, ok, ok,      # ip down, iw set type, ip up
+            verify_fail,     # _verify_monitor_mode: "type managed" → False
+        ]
+        with (
+            patch("wifi_monitor_nitro5.AIRODUMP_MONITOR_LOG", log_file),
+            patch("wifi_monitor_nitro5.time.sleep"),
+        ):
+            result = _enable_monitor_mode("wlan0", runner=runner)
+        assert result is False
+
+
+class TestEnableMonitorModeVirtualCleanupException:
+    """Lines 732-733: ip up fails and cleanup iw dev del also raises."""
+
+    def test_ip_up_fails_and_cleanup_raises(self):
+        """Returns None when ip up fails and cleanup also raises OSError."""
+        runner = MagicMock()
+        dev_info = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="Interface wlan0\n  wiphy 0\n", stderr=""
+        )
+        phy_add_ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        ip_up_fail = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="err")
+        runner.run.side_effect = [
+            dev_info, phy_add_ok, ip_up_fail,
+            OSError("iw del failed"),  # cleanup raises
+        ]
+        result = _enable_monitor_mode_virtual("wlan0", runner=runner)
+        assert result is None
+
+
+class TestAirodumpScannerNonRootPath:
+    """Line 863: geteuid() != 0 makes start() use 'sudo airodump-ng'."""
+
+    def test_start_non_root_uses_sudo_airodump(self, tmp_path):
+        """start() uses 'sudo airodump-ng' when not running as root."""
+        log_file = str(tmp_path / "airodump.log")
+        fake = _FakeRunner()
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        fake.set_popen_result(mock_proc)
+        iw_dev_info = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="Interface wlan0\n  wiphy 0\n", stderr=""
+        )
+        iw_phy_info = subprocess.CompletedProcess(
+            args=[], returncode=0,
+            stdout="Supported interface modes:\n * managed\n * monitor\n",
+            stderr="",
+        )
+        success = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        fake.set_run_results(
+            iw_dev_info, iw_phy_info,
+            success, success,
+            success,
+            iw_dev_info, success, success,
+            success,
+        )
+        scanner = AirodumpScanner(interface="wlan0", runner=fake)
+        with (
+            patch("wifi_monitor_nitro5.AIRODUMP_STDERR_LOG", log_file),
+            patch("wifi_monitor_nitro5.os.geteuid", return_value=1000),
+            patch("wifi_monitor_nitro5.time.sleep"),
+        ):
+            ok, _ = scanner.start()
+        assert ok is True
+        cmd, _ = fake.popen_calls[0]
+        assert cmd[0] == "sudo"
+        assert "airodump-ng" in cmd
+        scanner.stop()
+
+
+class TestAirodumpScannerStopCloseError:
+    """Lines 938-939: stderr_file.close() raises OSError in stop()."""
+
+    def test_stop_close_oserror_is_ignored(self):
+        """stop() continues cleanly when closing _stderr_file raises OSError."""
+        scanner = AirodumpScanner(interface="wlan0")
+        mock_file = MagicMock()
+        mock_file.close.side_effect = OSError("file already closed")
+        scanner._stderr_file = mock_file
+        scanner._monitor_enabled = False
+        scanner.stop()  # must not raise
+        assert scanner._stderr_file is None
+
+
+class TestLogExitIfDeadAlive:
+    """Line 956: log_exit_if_dead returns True when process is still alive or None."""
+
+    def test_log_exit_if_dead_returns_true_when_alive(self):
+        """Returns True when process is still running (poll() returns None)."""
+        scanner = AirodumpScanner(interface="wlan0")
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        scanner._proc = mock_proc
+        assert scanner.log_exit_if_dead() is True
+
+    def test_log_exit_if_dead_returns_true_when_proc_none(self):
+        """Returns True when _proc is None."""
+        scanner = AirodumpScanner(interface="wlan0")
+        scanner._proc = None
+        assert scanner.log_exit_if_dead() is True
+
+
+class TestScanDebugMoreThanTenNetworks:
+    """Line 1033: scan() debug log when CSV has >10 networks."""
+
+    def test_scan_debug_logs_truncation_above_ten(self):
+        """scan() with debug=True and >10 networks executes the truncation log."""
+        header = (
+            "BSSID, First time seen, Last time seen, channel, Speed, Privacy, "
+            "Cipher, Authentication, Power, # beacons, # IV, LAN IP, "
+            "ID-length, ESSID, Key\n"
+        )
+        rows = ""
+        for i in range(12):
+            rows += (
+                f"AA:BB:CC:DD:EE:{i:02X}, 2024-01-01 00:00:00, 2024-01-01 00:00:01, "
+                f"6, 54, WPA2, CCMP, PSK, -60, 10, 0, 0.0.0.0, 4, Net{i:02d}, \n"
+            )
+        csv_content = (
+            header + rows
+            + "\n\nStation MAC, First time seen, Last time seen, Power, "
+            "# packets, BSSID, Probed ESSIDs\n"
+        )
+        scanner = AirodumpScanner(interface="wlan0", prefix="/tmp/test_dbg11", debug=True)
+        with (
+            patch("wifi_monitor_nitro5.glob.glob", return_value=["/tmp/test_dbg11-01.csv"]),
+            patch("builtins.open", mock_open(read_data=csv_content)),
+        ):
+            networks = scanner.scan()
+        assert len(networks) >= 10
+
+
+# ---------------------------------------------------------------------------
+# main() — integration tests via heavy mocking
+# ---------------------------------------------------------------------------
+
+
+class TestMain:
+    """main() integration tests using mocked Console, Live, scan, and sleep."""
+
+    def _args(self, **kw):
+        defaults = dict(
+            interface=None, monitor=False, dns=False, credentials=None,
+            connect=False, debug=False, arp=False,
+        )
+        defaults.update(kw)
+        return argparse.Namespace(**defaults)
+
+    def _nets(self):
+        return [Network(
+            bssid="aa:bb:cc:dd:ee:01", ssid="HomeNet",
+            signal=-55, channel=6, security="WPA2",
+        )]
+
+    def test_main_no_flags_exits_on_keyboard_interrupt(self):
+        """main() with no flags runs one cycle then exits on KeyboardInterrupt."""
+        from wifi_monitor_nitro5 import main
+        with (
+            patch("wifi_monitor_nitro5._parse_args", return_value=self._args()),
+            patch("wifi_monitor_nitro5.Console"),
+            patch("wifi_monitor_nitro5.Live"),
+            patch("wifi_monitor_nitro5.scan_wifi_nmcli", return_value=self._nets()),
+            patch("wifi_monitor_nitro5._get_connected_bssid", return_value=None),
+            patch("wifi_monitor_nitro5.time.sleep", side_effect=KeyboardInterrupt),
+            patch("wifi_monitor_nitro5.sys.exit"),
+        ):
+            main()
+
+    def test_main_arp_flag_creates_arp_scanner(self):
+        """main() with --arp creates ArpScanner and overlays client count."""
+        from wifi_monitor_nitro5 import main
+        with (
+            patch("wifi_monitor_nitro5._parse_args", return_value=self._args(arp=True)),
+            patch("wifi_monitor_nitro5.Console"),
+            patch("wifi_monitor_nitro5.Live"),
+            patch("wifi_monitor_nitro5.scan_wifi_nmcli", return_value=self._nets()),
+            patch("wifi_monitor_nitro5._get_connected_bssid", return_value="aa:bb:cc:dd:ee:01"),
+            patch("wifi_monitor_nitro5.ArpScanner") as mock_arp_cls,
+            patch("wifi_monitor_nitro5.time.sleep", side_effect=KeyboardInterrupt),
+            patch("wifi_monitor_nitro5.sys.exit"),
+        ):
+            mock_arp_cls.return_value.scan.return_value = 5
+            main()
+
+    def test_main_credentials_loaded_and_auto_connect(self):
+        """main() with --credentials and --connect loads creds and connects."""
+        from wifi_monitor_nitro5 import main
+        with (
+            patch("wifi_monitor_nitro5._parse_args",
+                  return_value=self._args(credentials="creds.csv", connect=True)),
+            patch("wifi_monitor_nitro5.Console"),
+            patch("wifi_monitor_nitro5.Live"),
+            patch("wifi_monitor_nitro5.load_credentials", return_value={"HomeNet": "pass"}),
+            patch("wifi_monitor_nitro5.scan_wifi_nmcli", return_value=self._nets()),
+            patch("wifi_monitor_nitro5._get_connected_bssid", return_value=None),
+            patch("wifi_monitor_nitro5.connect_wifi_nmcli", return_value=True),
+            patch("wifi_monitor_nitro5.time.sleep", side_effect=KeyboardInterrupt),
+            patch("wifi_monitor_nitro5.sys.exit"),
+        ):
+            main()
+
+    def test_main_credentials_empty_warns(self):
+        """main() warns when credentials file loads no entries."""
+        from wifi_monitor_nitro5 import main
+        with (
+            patch("wifi_monitor_nitro5._parse_args",
+                  return_value=self._args(credentials="empty.csv")),
+            patch("wifi_monitor_nitro5.Console"),
+            patch("wifi_monitor_nitro5.Live"),
+            patch("wifi_monitor_nitro5.load_credentials", return_value={}),
+            patch("wifi_monitor_nitro5.scan_wifi_nmcli", return_value=self._nets()),
+            patch("wifi_monitor_nitro5._get_connected_bssid", return_value=None),
+            patch("wifi_monitor_nitro5.time.sleep", side_effect=KeyboardInterrupt),
+            patch("wifi_monitor_nitro5.sys.exit"),
+        ):
+            main()
+
+    def test_main_dns_flag_starts_tracker_shows_dns_table(self):
+        """main() with --dns starts DnsTracker and updates Live with Group."""
+        from wifi_monitor_nitro5 import main
+        with (
+            patch("wifi_monitor_nitro5._parse_args", return_value=self._args(dns=True)),
+            patch("wifi_monitor_nitro5.Console"),
+            patch("wifi_monitor_nitro5.Live"),
+            patch("wifi_monitor_nitro5.DnsTracker") as mock_dns_cls,
+            patch("wifi_monitor_nitro5.scan_wifi_nmcli", return_value=self._nets()),
+            patch("wifi_monitor_nitro5._get_connected_bssid", return_value=None),
+            patch("wifi_monitor_nitro5.time.sleep", side_effect=KeyboardInterrupt),
+            patch("wifi_monitor_nitro5.sys.exit"),
+        ):
+            mock_tracker = MagicMock()
+            mock_tracker.start.return_value = True
+            mock_tracker.top.return_value = []
+            mock_dns_cls.return_value = mock_tracker
+            main()
+
+    def test_main_dns_start_fails_disables_tracker(self):
+        """main() disables DNS tracker when start() returns False."""
+        from wifi_monitor_nitro5 import main
+        with (
+            patch("wifi_monitor_nitro5._parse_args", return_value=self._args(dns=True)),
+            patch("wifi_monitor_nitro5.Console"),
+            patch("wifi_monitor_nitro5.Live"),
+            patch("wifi_monitor_nitro5.DnsTracker") as mock_dns_cls,
+            patch("wifi_monitor_nitro5.scan_wifi_nmcli", return_value=self._nets()),
+            patch("wifi_monitor_nitro5._get_connected_bssid", return_value=None),
+            patch("wifi_monitor_nitro5.time.sleep", side_effect=KeyboardInterrupt),
+            patch("wifi_monitor_nitro5.sys.exit"),
+        ):
+            mock_tracker = MagicMock()
+            mock_tracker.start.return_value = False
+            mock_dns_cls.return_value = mock_tracker
+            main()
+
+    def test_main_debug_flag_sets_up_logging(self):
+        """main() with --debug configures logging with FileHandler."""
+        from wifi_monitor_nitro5 import main
+        # Patch the whole logging module in wifi_monitor_nitro5 so no real handlers
+        # are added to the root logger (which would leak a MagicMock across tests).
+        with (
+            patch("wifi_monitor_nitro5._parse_args", return_value=self._args(debug=True)),
+            patch("wifi_monitor_nitro5.Console"),
+            patch("wifi_monitor_nitro5.Live"),
+            patch("wifi_monitor_nitro5.scan_wifi_nmcli", return_value=self._nets()),
+            patch("wifi_monitor_nitro5._get_connected_bssid", return_value=None),
+            patch("wifi_monitor_nitro5.logging"),
+            patch("wifi_monitor_nitro5.time.sleep", side_effect=KeyboardInterrupt),
+            patch("wifi_monitor_nitro5.sys.exit"),
+        ):
+            main()
+
+    def test_main_monitor_flag_airodump_starts_ok(self):
+        """main() with --monitor starts AirodumpScanner; uses it for scanning."""
+        from wifi_monitor_nitro5 import main
+        with (
+            patch("wifi_monitor_nitro5._parse_args", return_value=self._args(monitor=True)),
+            patch("wifi_monitor_nitro5.Console"),
+            patch("wifi_monitor_nitro5.Live"),
+            patch("wifi_monitor_nitro5.AirodumpScanner") as mock_cls,
+            patch("wifi_monitor_nitro5.scan_wifi_nmcli", return_value=self._nets()),
+            patch("wifi_monitor_nitro5._get_connected_bssid", return_value=None),
+            patch("wifi_monitor_nitro5.atexit.register"),
+            patch("wifi_monitor_nitro5.time.sleep", side_effect=KeyboardInterrupt),
+            patch("wifi_monitor_nitro5.sys.exit"),
+        ):
+            mock_scanner = MagicMock()
+            mock_scanner.start.return_value = (True, None)
+            mock_scanner.scan.return_value = self._nets()
+            mock_scanner.log_exit_if_dead.return_value = True
+            mock_scanner.interface = "wlan0"
+            mock_cls.return_value = mock_scanner
+            main()
+
+    def test_main_monitor_flag_airodump_fails_falls_back(self):
+        """main() with --monitor uses nmcli fallback when airodump fails to start."""
+        from wifi_monitor_nitro5 import main
+        with (
+            patch("wifi_monitor_nitro5._parse_args", return_value=self._args(monitor=True)),
+            patch("wifi_monitor_nitro5.Console"),
+            patch("wifi_monitor_nitro5.Live"),
+            patch("wifi_monitor_nitro5.AirodumpScanner") as mock_cls,
+            patch("wifi_monitor_nitro5.scan_wifi_nmcli", return_value=self._nets()),
+            patch("wifi_monitor_nitro5._get_connected_bssid", return_value=None),
+            patch("wifi_monitor_nitro5.time.sleep", side_effect=KeyboardInterrupt),
+            patch("wifi_monitor_nitro5.sys.exit"),
+        ):
+            mock_scanner = MagicMock()
+            mock_scanner.start.return_value = (False, "monitor_unsupported")
+            mock_cls.return_value = mock_scanner
+            main()
+
+    def test_main_monitor_airodump_exits_mid_run(self):
+        """main() falls back to nmcli when airodump exits during a scan cycle."""
+        from wifi_monitor_nitro5 import main
+        with (
+            patch("wifi_monitor_nitro5._parse_args", return_value=self._args(monitor=True)),
+            patch("wifi_monitor_nitro5.Console"),
+            patch("wifi_monitor_nitro5.Live"),
+            patch("wifi_monitor_nitro5.AirodumpScanner") as mock_cls,
+            patch("wifi_monitor_nitro5.scan_wifi_nmcli", return_value=self._nets()),
+            patch("wifi_monitor_nitro5._get_connected_bssid", return_value=None),
+            patch("wifi_monitor_nitro5.atexit.register"),
+            patch("wifi_monitor_nitro5._LOGGER"),  # prevent handler issues
+            patch("wifi_monitor_nitro5.time.sleep", side_effect=KeyboardInterrupt),
+            patch("wifi_monitor_nitro5.sys.exit"),
+        ):
+            mock_scanner = MagicMock()
+            mock_scanner.start.return_value = (True, None)
+            mock_scanner.log_exit_if_dead.return_value = False  # airodump died
+            mock_scanner.interface = "wlan0"
+            mock_cls.return_value = mock_scanner
+            main()

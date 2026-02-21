@@ -7,9 +7,11 @@ Currently runs on **Linux laptops** using `nmcli` (NetworkManager). Raspberry Pi
 ## Features
 
 - **Real-time scanning** -- Continuously scans for nearby WiFi networks and refreshes the display.
+- **Connected network indicator** -- The network you are currently connected to is highlighted bold with a `●` marker in the **Con** column, always visible.
 - **Signal strength** -- Shows signal in dBm with color-coded bar indicators (green/yellow/red).
 - **Security detection** -- Identifies Open, WEP, WPA, WPA2, and WPA3 networks.
 - **Hidden networks** -- Detects and displays hidden SSIDs.
+- **ARP client detection** -- Count active devices on your connected network via ARP scanning (`--arp`). Works on all WiFi adapters including Intel built-in. Requires root.
 - **Credentials file** -- Load SSID/passphrase pairs from a CSV file to identify known networks and optionally auto-connect.
 - **DNS query capture** -- Live capture and display of DNS queries in a ranked "top" style table (requires root / tcpdump).
 - **Rich TUI** -- Clean terminal interface using the [Rich](https://github.com/Textualize/rich) library.
@@ -43,6 +45,12 @@ sudo python wifi_monitor_nitro5.py --dns
 
 # Combine all features
 sudo python wifi_monitor_nitro5.py --dns -c credentials.csv --connect
+
+# Count clients on connected network via ARP (works on Intel WiFi)
+sudo python wifi_monitor_nitro5.py --arp
+
+# ARP client counts + DNS capture
+sudo python wifi_monitor_nitro5.py --arp --dns
 
 # Run with sudo to force fresh rescans
 sudo python wifi_monitor_nitro5.py
@@ -94,6 +102,26 @@ sudo python wifi_monitor_nitro5.py --dns -c credentials.csv --connect
 - The top 15 most-queried domains are displayed, updated every scan cycle.
 - If tcpdump is not installed or cannot start, the feature is silently disabled and the normal network table is shown.
 
+## ARP Client Detection
+
+The `--arp` flag counts active devices on the network you are currently connected to using ARP scanning. Unlike `--monitor`, this works on **any WiFi adapter including Intel built-in WiFi**.
+
+```bash
+# ARP client detection (requires root for raw ARP)
+sudo python wifi_monitor_nitro5.py --arp
+
+# With a specific interface
+sudo python wifi_monitor_nitro5.py --arp -i wlan0
+```
+
+- Uses `arp-scan --localnet` when available; falls back to `nmap -sn` automatically.
+- The client count appears in the **Cli** column of the connected network's row.
+- Only counts clients on **your connected subnet** — cannot see clients on other networks.
+- Returns 0 gracefully if neither tool is installed or if not currently connected.
+- Install arp-scan: `sudo apt install arp-scan`
+
+**Intel WiFi note:** The `--monitor` flag (airodump-ng) requires an Atheros/Realtek USB adapter because Intel laptop WiFi drivers do not deliver 802.11 management frames to virtual monitor interfaces — this is a documented driver limitation. Use `--arp` for client detection on Intel hardware.
+
 ## Monitor Mode (Client Count per BSSID)
 
 The `--monitor` flag enables client counting per access point using airodump-ng in monitor mode. A **Cli** column appears in the network table showing the number of associated clients for each BSSID.
@@ -123,6 +151,7 @@ sudo python wifi_monitor_nitro5.py --monitor -i wlan1
 |----------|-----------------------------------------------------------|
 | #        | Row number                                                |
 | SSID     | Network name (or `<hidden>` for hidden networks)          |
+| Con      | `●` if this is the currently connected network            |
 | Key      | `*` if credentials are known (only shown with `-c` flag)  |
 | BSSID    | Access point MAC address                                  |
 | Ch       | WiFi channel (2.4 GHz and 5 GHz)                         |
@@ -144,9 +173,10 @@ Wifimonitor/
 ├── requirements.txt           # Pi dependencies (future)
 ├── .github/workflows/ci.yml   # CI pipeline (test, lint, security)
 ├── tests/
-│   ├── test_wifi_monitor_nitro5.py   # 153 tests — parsing, rendering, scanning, credentials, DNS, injection
-│   └── test_wifi_common.py           #  69 tests — helpers, airodump CSV, validation, colors, protocol
+│   ├── test_wifi_monitor_nitro5.py   # 274 tests — parsing, rendering, scanning, credentials, DNS, ARP, monitor helpers, main()
+│   └── test_wifi_common.py           #  71 tests — helpers, airodump CSV, validation, colors, protocol
 ├── CLAUDE.md                  # Agent guide and coding standards
+├── WORK_IN_PROGRESS.md        # Feature blueprints and running commentary
 └── .claude/agents/            # Claude agent definitions
     ├── architect-agent.md     # Architecture research and design
     ├── tdd-agent.md           # TDD / Software Craftsmanship
@@ -166,7 +196,7 @@ pytest tests/ -v
 pytest tests/ -v --cov=. --cov-report=term-missing
 ```
 
-222 tests cover parsing, signal helpers, security mapping, Rich table rendering, subprocess error handling, credentials file loading, network connection, DNS query capture, input validation, CommandRunner injection, and edge cases.
+345 tests cover parsing, signal helpers, security mapping, Rich table rendering, subprocess error handling, credentials file loading, network connection, DNS query capture, ARP client detection, connected network indicator, monitor mode helpers, main() integration, input validation, CommandRunner injection, and edge cases.
 
 ## Security Hardening
 
@@ -204,12 +234,13 @@ If monitor mode shows "client counts enabled" but no networks or client counts a
 - **Test coverage for wifi_monitor_nitro5.py** (3 pts) -- Raise coverage from 79% to 90%+. Major gap is `main()` (~70 lines untested). Requires extracting the TUI loop body into a testable function, adding seams for `Console`/`Live`, and covering `DnsTracker._reader_loop` threading edge cases and `load_credentials` error paths.
 - **Scanner and Renderer protocols** (3 pts) -- Define `ScannerProtocol` and `RendererProtocol` abstractions. Split `wifi_monitor_nitro5.py` into `NmcliScanner`, `RichRenderer`, and a thin `MonitorApp` coordinator (Single Responsibility).
 - **UX agent** (3 pts) -- Create a UX agent that evaluates and suggests improvements for both the CLI/TUI (Rich tables, layout, color, information density) and future GUI surfaces. Integrate into the manager pipeline alongside the existing review agents.
+- **Debugging capability** -- Add debug output throughout the code base to enable debugging and verbose output to verify capabilities are working as expected and to debug when things are not working.
 
 ### Features
 
-- **Detect number of clients on each BSSID** -- accurately detect the number of clients on each BSSID.
-- **Display RF band for each BSSID** -- Display in output what RF band each BSSID is currently operating in.
 - **Auto-detect platform and wifi devices** -- Enable running just `wifi_monitor.py` and auto detect OS and WiFi devices.
+- **Display RF band for each BSSID** -- Display in output what RF band each BSSID is currently operating in.
+- **Detect number of clients on each BSSID** -- accurately detect the number of clients on each BSSID.
 - **Deauth attack detection** (8 pts) -- Detect deauthentication/disassociation frames targeting your own network and alert in the TUI. Requires monitor mode capture and 802.11 management frame parsing.
 - **Rogue AP detection** (5 pts) -- Identify rogue access points impersonating known SSIDs with mismatched BSSIDs or unexpected channels. Works with existing nmcli scan data; needs a known-good baseline file.
 - **Unusual client behavior monitoring** (13 pts) -- Monitor for anomalous client activity on networks you own (e.g. rapid association/disassociation, probe floods). Requires monitor mode and rate-based anomaly heuristics.
