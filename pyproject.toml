@@ -1,3 +1,26 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wifimonitor"
+version = "0.1.0"
+description = "WiFi monitoring tool for Linux laptops and Raspberry Pi"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "rich>=13.0,<15",
+]
+
+[project.scripts]
+wifimonitor = "wifimonitor.wifi_monitor_nitro5:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 

@@ -1,9 +1,12 @@
 name: CI
 on:
   push:
-    branches: [main, "claude/**"]
+    branches: [main, "claude/**", "cursor/**"]
   pull_request:
     branches: [main]
+
+permissions:
+  contents: read
 
 jobs:
   test:
@@ -16,10 +19,21 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            requirements-*.txt
       - name: Install dependencies
-        run: pip install -r requirements-dev.txt
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+          python -m pip install -e .
+      - name: Verify package entrypoints
+        run: |
+          python -m wifimonitor --help
+          wifimonitor --help
       - name: Run tests
-        run: pytest tests/ -v --cov=src/ --cov-report=term-missing
+        run: python -m pytest tests/ -v --cov=src/ --cov-report=term-missing
 
   lint:
     runs-on: ubuntu-latest
@@ -28,12 +42,19 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            requirements-*.txt
       - name: Install dependencies
-        run: pip install -r requirements-dev.txt
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+          python -m pip install -e .
       - name: Ruff check
-        run: ruff check src/ tests/
+        run: python -m ruff check src/ tests/ wifi_monitor.py
       - name: Mypy
-        run: mypy src/
+        run: python -m mypy src/
 
   security:
     runs-on: ubuntu-latest
@@ -42,7 +63,15 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            requirements-*.txt
       - name: Install dependencies
-        run: pip install -r requirements-dev.txt
-      - name: Pip audit
-        run: pip-audit -r requirements-laptop.txt
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+      - name: Pip audit (laptop + dev)
+        run: python -m pip_audit -r requirements-dev.txt
+      - name: Pip audit (pi)
+        run: python -m pip_audit -r requirements.txt
