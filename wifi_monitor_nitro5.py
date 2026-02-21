@@ -1191,6 +1191,7 @@ def build_table(
     networks: list[Network],
     credentials: dict[str, str] | None = None,
     caption_override: str | None = None,
+    connected_bssid: str | None = None,
 ) -> Table:
     """Build a Rich Table displaying the scanned networks.
 
@@ -1200,7 +1201,14 @@ def build_table(
             a "Key" column is added showing which networks have known
             passphrases.
         caption_override: Optional caption to use instead of default.
+        connected_bssid: Optional BSSID of the currently connected network.
+            When provided, the matching row is highlighted bold and shows a
+            filled-circle indicator in the "Con" column.  Empty string is
+            treated as None (not connected).
     """
+    # Normalize: empty string or None both mean "not connected"
+    _connected = connected_bssid.lower() if connected_bssid else None
+
     show_key = bool(credentials)
     caption = caption_override if caption_override is not None else f"{len(networks)} networks found"
     table = Table(
@@ -1213,6 +1221,7 @@ def build_table(
         padding=(0, 1),
     )
     table.add_column("#", style="grey50", width=3, justify="right")
+    table.add_column("Con", justify="center", width=3)
     table.add_column("SSID", style="white", min_width=15, max_width=30)
     if show_key:
         table.add_column("Key", justify="center", width=3)
@@ -1224,6 +1233,7 @@ def build_table(
     table.add_column("Security", width=8)
 
     for i, net in enumerate(networks, 1):
+        is_connected = bool(_connected) and net.bssid == _connected
         ssid = escape(net.ssid) if net.ssid else "[dim]<hidden>[/dim]"
         sig_c = _rich_color(signal_color(net.signal))
         sec_c = _rich_color(security_color(net.security))
@@ -1232,6 +1242,7 @@ def build_table(
 
         row = [
             str(i),
+            "[green]●[/green]" if is_connected else "",
             ssid,
         ]
         if show_key:
@@ -1246,7 +1257,7 @@ def build_table(
             f"[{sec_c}]{net.security}[/{sec_c}]",
         ])
 
-        table.add_row(*row)
+        table.add_row(*row, style="bold" if is_connected else "")
 
     return table
 
@@ -1510,11 +1521,12 @@ def main() -> None:
                 else:
                     networks = scan_wifi_nmcli(args.interface)
 
+                connected_bssid = _get_connected_bssid(
+                    args.interface, runner=_DEFAULT_RUNNER
+                )
+
                 if arp_scanner is not None:
                     arp_count = arp_scanner.scan()
-                    connected_bssid = _get_connected_bssid(
-                        args.interface, runner=_DEFAULT_RUNNER
-                    )
                     if connected_bssid:
                         for net in networks:
                             if net.bssid == connected_bssid:
@@ -1525,6 +1537,7 @@ def main() -> None:
                     networks,
                     credentials=credentials,
                     caption_override=caption_override,
+                    connected_bssid=connected_bssid,
                 )
 
                 if dns_tracker is not None:

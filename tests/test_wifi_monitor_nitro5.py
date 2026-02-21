@@ -1787,3 +1787,109 @@ class TestParseArgsArpFlag:
         args = _parse_args(["--arp", "-i", "wlan0"])
         assert args.arp is True
         assert args.interface == "wlan0"
+
+
+# ---------------------------------------------------------------------------
+# build_table — connected network indicator (Con column + bold row)
+# ---------------------------------------------------------------------------
+
+import io as _io
+
+
+def _render_table(table) -> str:
+    """Render a Rich Table to a plain string (no color) for assertion."""
+    from rich.console import Console
+    buf = _io.StringIO()
+    console = Console(file=buf, no_color=True, highlight=False, width=120)
+    console.print(table)
+    return buf.getvalue()
+
+
+class TestBuildTableConnectedIndicator:
+    """build_table highlights the connected network row with a Con column."""
+
+    _BSSID = "aa:bb:cc:dd:ee:01"
+    _NET = Network(bssid=_BSSID, ssid="HomeNetwork", signal=-55, channel=6, security="WPA2")
+
+    def test_build_table_always_has_con_column(self):
+        """'Con' column is always present regardless of connected_bssid value."""
+        table = build_table([self._NET])
+        col_headers = [c.header for c in table.columns]
+        assert "Con" in col_headers
+
+    def test_build_table_con_column_present_when_none(self):
+        """'Con' column present even when connected_bssid=None."""
+        table = build_table([self._NET], connected_bssid=None)
+        col_headers = [c.header for c in table.columns]
+        assert "Con" in col_headers
+
+    def test_build_table_connected_bssid_shows_indicator(self):
+        """Matching BSSID row renders the filled-circle indicator."""
+        table = build_table([self._NET], connected_bssid=self._BSSID)
+        output = _render_table(table)
+        assert "●" in output
+
+    def test_build_table_non_connected_row_no_indicator(self):
+        """Non-matching row does not show the indicator."""
+        other = Network(bssid="aa:bb:cc:dd:ee:02", ssid="Other", signal=-70, channel=11, security="WPA2")
+        table = build_table([other], connected_bssid=self._BSSID)
+        output = _render_table(table)
+        assert "●" not in output
+
+    def test_build_table_connected_bssid_none_no_indicator(self):
+        """connected_bssid=None → no indicator in any row."""
+        table = build_table([self._NET], connected_bssid=None)
+        output = _render_table(table)
+        assert "●" not in output
+
+    def test_build_table_connected_bssid_empty_string_no_indicator(self):
+        """connected_bssid='' treated as not connected → no indicator."""
+        table = build_table([self._NET], connected_bssid="")
+        output = _render_table(table)
+        assert "●" not in output
+
+    def test_build_table_connected_bssid_no_match_no_indicator(self):
+        """connected_bssid set but not matching any network → no indicator."""
+        table = build_table([self._NET], connected_bssid="ff:ff:ff:ff:ff:ff")
+        output = _render_table(table)
+        assert "●" not in output
+
+    def test_build_table_connected_bssid_case_insensitive(self):
+        """Uppercase BSSID in connected_bssid matches lowercase net.bssid."""
+        table = build_table([self._NET], connected_bssid="AA:BB:CC:DD:EE:01")
+        output = _render_table(table)
+        assert "●" in output
+
+    def test_build_table_connected_hidden_network_shows_indicator(self):
+        """Hidden SSID (ssid='') network shows indicator when connected."""
+        hidden = Network(bssid="aa:bb:cc:dd:ee:03", ssid="", signal=-60, channel=6, security="WPA2")
+        table = build_table([hidden], connected_bssid="aa:bb:cc:dd:ee:03")
+        output = _render_table(table)
+        assert "●" in output
+
+    def test_build_table_empty_networks_with_connected_bssid_no_crash(self):
+        """Empty network list with connected_bssid set does not crash."""
+        table = build_table([], connected_bssid=self._BSSID)
+        assert table.row_count == 0
+
+    def test_build_table_only_connected_row_has_indicator(self):
+        """Only the connected row shows indicator; others are empty."""
+        nets = [
+            self._NET,
+            Network(bssid="aa:bb:cc:dd:ee:02", ssid="Other", signal=-70, channel=11, security="WPA2"),
+        ]
+        table = build_table(nets, connected_bssid=self._BSSID)
+        output = _render_table(table)
+        # Indicator present once
+        assert output.count("●") == 1
+
+    def test_build_table_row_count_unchanged_with_connected_bssid(self):
+        """Adding connected_bssid does not change the row count."""
+        nets = [self._NET, Network(bssid="aa:bb:cc:dd:ee:02", ssid="B", signal=-70, channel=11, security="Open")]
+        assert build_table(nets, connected_bssid=self._BSSID).row_count == 2
+
+    def test_build_table_con_column_before_bssid(self):
+        """Con column appears near the left of the table (before BSSID)."""
+        table = build_table([self._NET], connected_bssid=self._BSSID)
+        headers = [c.header for c in table.columns]
+        assert headers.index("Con") < headers.index("BSSID")
