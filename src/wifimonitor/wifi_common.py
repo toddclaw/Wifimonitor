@@ -53,6 +53,16 @@ class Network:
     clients: int = 0
 
 
+@dataclass
+class WifiDevice:
+    """A detected WiFi interface on the system."""
+
+    name: str                   # e.g., "wlan0"
+    driver: str = "unknown"     # e.g., "ath9k", "iwlwifi"
+    supports_monitor: bool = False
+    is_up: bool = False
+
+
 # ---------------------------------------------------------------------------
 # Command runner protocol (subprocess injection seam)
 # ---------------------------------------------------------------------------

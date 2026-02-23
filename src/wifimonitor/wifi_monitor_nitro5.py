@@ -49,6 +49,11 @@ from wifimonitor.wifi_common import (
     COLOR_TO_RICH,
     CommandRunner, SubprocessRunner,
 )
+from wifimonitor.platform_detect import (
+    detect_platform,
+    list_wifi_interfaces,
+    detect_best_interface,
+)
 
 # -- Defaults --
 SCAN_INTERVAL = 10  # seconds between refreshes
@@ -1331,6 +1336,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="enable debug logging for troubleshooting (e.g. client counts in monitor mode)",
     )
+    parser.add_argument(
+        "--list-devices",
+        action="store_true",
+        help="list detected WiFi interfaces and exit",
+    )
     return parser.parse_args(argv)
 
 
@@ -1411,6 +1421,35 @@ def main() -> None:
         except OSError:
             pass  # Debug log file optional; stderr still works
     console = Console()
+
+    # --list-devices: print detected WiFi interfaces and exit
+    if args.list_devices:
+        platform_type = detect_platform()
+        console.print(f"[bold cyan]Platform:[/bold cyan] {platform_type}")
+        devices = list_wifi_interfaces()
+        if not devices:
+            console.print("[yellow]No WiFi interfaces detected.[/yellow]")
+            sys.exit(0)
+        for dev in devices:
+            monitor_label = "[green]yes[/green]" if dev.supports_monitor else "[red]no[/red]"
+            up_label = "[green]up[/green]" if dev.is_up else "[yellow]down[/yellow]"
+            console.print(
+                f"  {dev.name}  driver={dev.driver}  "
+                f"monitor={monitor_label}  state={up_label}"
+            )
+        best = detect_best_interface(devices, monitor_mode=False)
+        if best:
+            console.print(f"\n[bold]Recommended interface:[/bold] {best}")
+        sys.exit(0)
+
+    # Auto-detect interface if not specified via -i
+    if not args.interface:
+        devices = list_wifi_interfaces()
+        detected = detect_best_interface(devices, monitor_mode=args.monitor)
+        if detected:
+            args.interface = detected
+            _LOGGER.debug("auto-detected interface: %s", detected)
+
     credentials: dict[str, str] | None = None
     connected = False
     dns_tracker: DnsTracker | None = None

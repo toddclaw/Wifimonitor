@@ -1802,6 +1802,73 @@ class TestParseArgsArpFlag:
 
 
 # ---------------------------------------------------------------------------
+# _parse_args — --list-devices flag
+# ---------------------------------------------------------------------------
+
+class TestParseArgsListDevicesFlag:
+    def test_list_devices_flag_default_false(self):
+        args = _parse_args([])
+        assert args.list_devices is False
+
+    def test_list_devices_flag_set(self):
+        args = _parse_args(["--list-devices"])
+        assert args.list_devices is True
+
+
+# ---------------------------------------------------------------------------
+# main() — --list-devices integration
+# ---------------------------------------------------------------------------
+
+class TestMainListDevices:
+    """main() with --list-devices prints devices and exits."""
+
+    def test_list_devices_shows_detected_interfaces(self):
+        from wifimonitor.wifi_monitor_nitro5 import main
+        from wifimonitor.wifi_common import WifiDevice
+        devices = [
+            WifiDevice(name="wlan0", driver="iwlwifi", supports_monitor=False, is_up=True),
+            WifiDevice(name="wlan1", driver="ath9k", supports_monitor=True, is_up=False),
+        ]
+        with (
+            patch("wifimonitor.wifi_monitor_nitro5._parse_args",
+                  return_value=argparse.Namespace(
+                      interface=None, monitor=False, dns=False, credentials=None,
+                      connect=False, debug=False, arp=False, list_devices=True,
+                  )),
+            patch("wifimonitor.wifi_monitor_nitro5.detect_platform", return_value="laptop"),
+            patch("wifimonitor.wifi_monitor_nitro5.list_wifi_interfaces", return_value=devices),
+            patch("wifimonitor.wifi_monitor_nitro5.Console") as mock_console_cls,
+            patch("wifimonitor.wifi_monitor_nitro5.sys.exit", side_effect=SystemExit(0)),
+        ):
+            with pytest.raises(SystemExit):
+                main()
+            # Verify console.print was called with device info
+            console_inst = mock_console_cls.return_value
+            printed = " ".join(str(c) for c in console_inst.print.call_args_list)
+            assert "wlan0" in printed
+            assert "wlan1" in printed
+
+    def test_list_devices_no_interfaces_shows_warning(self):
+        from wifimonitor.wifi_monitor_nitro5 import main
+        with (
+            patch("wifimonitor.wifi_monitor_nitro5._parse_args",
+                  return_value=argparse.Namespace(
+                      interface=None, monitor=False, dns=False, credentials=None,
+                      connect=False, debug=False, arp=False, list_devices=True,
+                  )),
+            patch("wifimonitor.wifi_monitor_nitro5.detect_platform", return_value="laptop"),
+            patch("wifimonitor.wifi_monitor_nitro5.list_wifi_interfaces", return_value=[]),
+            patch("wifimonitor.wifi_monitor_nitro5.Console") as mock_console_cls,
+            patch("wifimonitor.wifi_monitor_nitro5.sys.exit", side_effect=SystemExit(0)),
+        ):
+            with pytest.raises(SystemExit):
+                main()
+            console_inst = mock_console_cls.return_value
+            printed = " ".join(str(c) for c in console_inst.print.call_args_list)
+            assert "No WiFi" in printed
+
+
+# ---------------------------------------------------------------------------
 # build_table — connected network indicator (Con column + bold row)
 # ---------------------------------------------------------------------------
 
@@ -2827,7 +2894,7 @@ class TestMain:
     def _args(self, **kw):
         defaults = dict(
             interface=None, monitor=False, dns=False, credentials=None,
-            connect=False, debug=False, arp=False,
+            connect=False, debug=False, arp=False, list_devices=False,
         )
         defaults.update(kw)
         return argparse.Namespace(**defaults)
@@ -2843,6 +2910,7 @@ class TestMain:
         from wifimonitor.wifi_monitor_nitro5 import main
         with (
             patch("wifimonitor.wifi_monitor_nitro5._parse_args", return_value=self._args()),
+            patch("wifimonitor.wifi_monitor_nitro5.list_wifi_interfaces", return_value=[]),
             patch("wifimonitor.wifi_monitor_nitro5.Console"),
             patch("wifimonitor.wifi_monitor_nitro5.Live"),
             patch("wifimonitor.wifi_monitor_nitro5.scan_wifi_nmcli", return_value=self._nets()),
@@ -2857,6 +2925,7 @@ class TestMain:
         from wifimonitor.wifi_monitor_nitro5 import main
         with (
             patch("wifimonitor.wifi_monitor_nitro5._parse_args", return_value=self._args(arp=True)),
+            patch("wifimonitor.wifi_monitor_nitro5.list_wifi_interfaces", return_value=[]),
             patch("wifimonitor.wifi_monitor_nitro5.Console"),
             patch("wifimonitor.wifi_monitor_nitro5.Live"),
             patch("wifimonitor.wifi_monitor_nitro5.scan_wifi_nmcli", return_value=self._nets()),
@@ -2874,6 +2943,7 @@ class TestMain:
         with (
             patch("wifimonitor.wifi_monitor_nitro5._parse_args",
                   return_value=self._args(credentials="creds.csv", connect=True)),
+            patch("wifimonitor.wifi_monitor_nitro5.list_wifi_interfaces", return_value=[]),
             patch("wifimonitor.wifi_monitor_nitro5.Console"),
             patch("wifimonitor.wifi_monitor_nitro5.Live"),
             patch("wifimonitor.wifi_monitor_nitro5.load_credentials", return_value={"HomeNet": "pass"}),
@@ -2891,6 +2961,7 @@ class TestMain:
         with (
             patch("wifimonitor.wifi_monitor_nitro5._parse_args",
                   return_value=self._args(credentials="empty.csv")),
+            patch("wifimonitor.wifi_monitor_nitro5.list_wifi_interfaces", return_value=[]),
             patch("wifimonitor.wifi_monitor_nitro5.Console"),
             patch("wifimonitor.wifi_monitor_nitro5.Live"),
             patch("wifimonitor.wifi_monitor_nitro5.load_credentials", return_value={}),
@@ -2906,6 +2977,7 @@ class TestMain:
         from wifimonitor.wifi_monitor_nitro5 import main
         with (
             patch("wifimonitor.wifi_monitor_nitro5._parse_args", return_value=self._args(dns=True)),
+            patch("wifimonitor.wifi_monitor_nitro5.list_wifi_interfaces", return_value=[]),
             patch("wifimonitor.wifi_monitor_nitro5.Console"),
             patch("wifimonitor.wifi_monitor_nitro5.Live"),
             patch("wifimonitor.wifi_monitor_nitro5.DnsTracker") as mock_dns_cls,
@@ -2925,6 +2997,7 @@ class TestMain:
         from wifimonitor.wifi_monitor_nitro5 import main
         with (
             patch("wifimonitor.wifi_monitor_nitro5._parse_args", return_value=self._args(dns=True)),
+            patch("wifimonitor.wifi_monitor_nitro5.list_wifi_interfaces", return_value=[]),
             patch("wifimonitor.wifi_monitor_nitro5.Console"),
             patch("wifimonitor.wifi_monitor_nitro5.Live"),
             patch("wifimonitor.wifi_monitor_nitro5.DnsTracker") as mock_dns_cls,
@@ -2945,6 +3018,7 @@ class TestMain:
         # are added to the root logger (which would leak a MagicMock across tests).
         with (
             patch("wifimonitor.wifi_monitor_nitro5._parse_args", return_value=self._args(debug=True)),
+            patch("wifimonitor.wifi_monitor_nitro5.list_wifi_interfaces", return_value=[]),
             patch("wifimonitor.wifi_monitor_nitro5.Console"),
             patch("wifimonitor.wifi_monitor_nitro5.Live"),
             patch("wifimonitor.wifi_monitor_nitro5.scan_wifi_nmcli", return_value=self._nets()),
@@ -2960,6 +3034,7 @@ class TestMain:
         from wifimonitor.wifi_monitor_nitro5 import main
         with (
             patch("wifimonitor.wifi_monitor_nitro5._parse_args", return_value=self._args(monitor=True)),
+            patch("wifimonitor.wifi_monitor_nitro5.list_wifi_interfaces", return_value=[]),
             patch("wifimonitor.wifi_monitor_nitro5.Console"),
             patch("wifimonitor.wifi_monitor_nitro5.Live"),
             patch("wifimonitor.wifi_monitor_nitro5.AirodumpScanner") as mock_cls,
@@ -2982,6 +3057,7 @@ class TestMain:
         from wifimonitor.wifi_monitor_nitro5 import main
         with (
             patch("wifimonitor.wifi_monitor_nitro5._parse_args", return_value=self._args(monitor=True)),
+            patch("wifimonitor.wifi_monitor_nitro5.list_wifi_interfaces", return_value=[]),
             patch("wifimonitor.wifi_monitor_nitro5.Console"),
             patch("wifimonitor.wifi_monitor_nitro5.Live"),
             patch("wifimonitor.wifi_monitor_nitro5.AirodumpScanner") as mock_cls,
@@ -3000,6 +3076,7 @@ class TestMain:
         from wifimonitor.wifi_monitor_nitro5 import main
         with (
             patch("wifimonitor.wifi_monitor_nitro5._parse_args", return_value=self._args(monitor=True)),
+            patch("wifimonitor.wifi_monitor_nitro5.list_wifi_interfaces", return_value=[]),
             patch("wifimonitor.wifi_monitor_nitro5.Console"),
             patch("wifimonitor.wifi_monitor_nitro5.Live"),
             patch("wifimonitor.wifi_monitor_nitro5.AirodumpScanner") as mock_cls,
