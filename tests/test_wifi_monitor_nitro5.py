@@ -29,6 +29,8 @@ from wifimonitor.wifi_monitor_nitro5 import (
     scan_wifi_nmcli,
     load_credentials,
     connect_wifi_nmcli,
+    load_baseline,
+    save_baseline,
     parse_tcpdump_dns_line,
     DnsTracker,
     build_dns_table,
@@ -1818,6 +1820,163 @@ class TestParseArgsListDevicesFlag:
 
 
 # ---------------------------------------------------------------------------
+# _parse_args — --baseline and --save-baseline flags
+# ---------------------------------------------------------------------------
+
+class TestParseArgsBaselineFlags:
+    def test_baseline_flag_default_none(self):
+        args = _parse_args([])
+        assert args.baseline is None
+
+    def test_baseline_flag_set(self):
+        args = _parse_args(["--baseline", "known.json"])
+        assert args.baseline == "known.json"
+
+    def test_save_baseline_flag_default_none(self):
+        args = _parse_args([])
+        assert args.save_baseline is None
+
+    def test_save_baseline_flag_set(self):
+        args = _parse_args(["--save-baseline", "baseline.json"])
+        assert args.save_baseline == "baseline.json"
+
+
+# ---------------------------------------------------------------------------
+# load_baseline / save_baseline — known-good network baseline
+# ---------------------------------------------------------------------------
+
+class TestLoadBaseline:
+    """load_baseline reads a JSON file of known SSID/BSSID/channel tuples."""
+
+    def test_loads_valid_json(self, tmp_path):
+        path = tmp_path / "baseline.json"
+        path.write_text('[{"ssid":"Home","bssid":"AA:BB:CC:DD:EE:01","channel":6}]')
+        result = load_baseline(str(path))
+        assert len(result) == 1
+        assert result[0].ssid == "Home"
+        assert result[0].bssid == "aa:bb:cc:dd:ee:01"
+        assert result[0].channel == 6
+
+    def test_loads_multiple_entries(self, tmp_path):
+        path = tmp_path / "baseline.json"
+        data = [
+            {"ssid": "Home", "bssid": "aa:bb:cc:dd:ee:01", "channel": 6},
+            {"ssid": "Home", "bssid": "aa:bb:cc:dd:ee:02", "channel": 36},
+        ]
+        import json
+        path.write_text(json.dumps(data))
+        result = load_baseline(str(path))
+        assert len(result) == 2
+        assert result[1].channel == 36
+
+    def test_missing_file_returns_empty(self, tmp_path):
+        result = load_baseline(str(tmp_path / "nonexistent.json"))
+        assert result == []
+
+    def test_invalid_json_returns_empty(self, tmp_path):
+        path = tmp_path / "bad.json"
+        path.write_text("not valid json {{{")
+        result = load_baseline(str(path))
+        assert result == []
+
+    def test_non_array_json_returns_empty(self, tmp_path):
+        path = tmp_path / "obj.json"
+        path.write_text('{"ssid":"Home"}')
+        result = load_baseline(str(path))
+        assert result == []
+
+    def test_skips_entries_without_ssid(self, tmp_path):
+        path = tmp_path / "baseline.json"
+        path.write_text('[{"bssid":"aa:bb:cc:dd:ee:01","channel":6}]')
+        result = load_baseline(str(path))
+        assert result == []
+
+    def test_skips_entries_without_bssid(self, tmp_path):
+        path = tmp_path / "baseline.json"
+        path.write_text('[{"ssid":"Home","channel":6}]')
+        result = load_baseline(str(path))
+        assert result == []
+
+    def test_channel_defaults_to_zero(self, tmp_path):
+        path = tmp_path / "baseline.json"
+        path.write_text('[{"ssid":"Home","bssid":"aa:bb:cc:dd:ee:01"}]')
+        result = load_baseline(str(path))
+        assert result[0].channel == 0
+
+    def test_non_int_channel_defaults_to_zero(self, tmp_path):
+        path = tmp_path / "baseline.json"
+        path.write_text('[{"ssid":"Home","bssid":"aa:bb:cc:dd:ee:01","channel":"bad"}]')
+        result = load_baseline(str(path))
+        assert result[0].channel == 0
+
+    def test_bssid_lowercased(self, tmp_path):
+        path = tmp_path / "baseline.json"
+        path.write_text('[{"ssid":"Home","bssid":"AA:BB:CC:DD:EE:01"}]')
+        result = load_baseline(str(path))
+        assert result[0].bssid == "aa:bb:cc:dd:ee:01"
+
+    def test_skips_non_dict_entries(self, tmp_path):
+        path = tmp_path / "baseline.json"
+        path.write_text('["not a dict", {"ssid":"Home","bssid":"aa:bb:cc:dd:ee:01"}]')
+        result = load_baseline(str(path))
+        assert len(result) == 1
+
+
+class TestSaveBaseline:
+    """save_baseline writes scanned networks to a JSON file."""
+
+    def test_saves_networks_to_json(self, tmp_path):
+        path = tmp_path / "out.json"
+        nets = [
+            Network(bssid="aa:bb:cc:dd:ee:01", ssid="Home", channel=6, signal=-55),
+            Network(bssid="aa:bb:cc:dd:ee:02", ssid="Office", channel=36, signal=-65),
+        ]
+        count = save_baseline(str(path), nets)
+        assert count == 2
+        import json
+        data = json.loads(path.read_text())
+        assert len(data) == 2
+        assert data[0]["ssid"] == "Home"
+        assert data[0]["bssid"] == "aa:bb:cc:dd:ee:01"
+        assert data[0]["channel"] == 6
+
+    def test_skips_hidden_networks(self, tmp_path):
+        path = tmp_path / "out.json"
+        nets = [
+            Network(bssid="aa:bb:cc:dd:ee:01", ssid="Home", channel=6),
+            Network(bssid="aa:bb:cc:dd:ee:02", ssid="", channel=1),  # hidden
+        ]
+        count = save_baseline(str(path), nets)
+        assert count == 1
+
+    def test_empty_networks_writes_empty_array(self, tmp_path):
+        path = tmp_path / "out.json"
+        count = save_baseline(str(path), [])
+        assert count == 0
+        import json
+        assert json.loads(path.read_text()) == []
+
+    def test_write_failure_returns_zero(self, tmp_path):
+        count = save_baseline("/nonexistent/dir/out.json", [
+            Network(bssid="aa:bb:cc:dd:ee:01", ssid="Home"),
+        ])
+        assert count == 0
+
+    def test_roundtrip_load_save(self, tmp_path):
+        """Networks saved by save_baseline can be loaded by load_baseline."""
+        path = tmp_path / "roundtrip.json"
+        nets = [
+            Network(bssid="aa:bb:cc:dd:ee:01", ssid="Home", channel=6, signal=-55),
+        ]
+        save_baseline(str(path), nets)
+        loaded = load_baseline(str(path))
+        assert len(loaded) == 1
+        assert loaded[0].ssid == "Home"
+        assert loaded[0].bssid == "aa:bb:cc:dd:ee:01"
+        assert loaded[0].channel == 6
+
+
+# ---------------------------------------------------------------------------
 # main() — --list-devices integration
 # ---------------------------------------------------------------------------
 
@@ -2996,6 +3155,7 @@ class TestMain:
         defaults = dict(
             interface=None, monitor=False, dns=False, credentials=None,
             connect=False, debug=False, arp=False, list_devices=False,
+            baseline=None, save_baseline=None,
         )
         defaults.update(kw)
         return argparse.Namespace(**defaults)

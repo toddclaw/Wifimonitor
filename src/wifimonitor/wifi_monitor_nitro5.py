@@ -28,6 +28,7 @@ import atexit
 import collections
 import csv
 import io
+import json
 from datetime import datetime
 import glob
 import logging
@@ -45,7 +46,8 @@ from rich.markup import escape
 from rich.table import Table
 
 from wifimonitor.wifi_common import (
-    Network, parse_airodump_csv, signal_to_bars, signal_color, security_color,
+    Network, KnownNetwork, parse_airodump_csv,
+    signal_to_bars, signal_color, security_color,
     COLOR_TO_RICH,
     CommandRunner, SubprocessRunner,
 )
@@ -175,6 +177,99 @@ def connect_wifi_nmcli(
         return result.returncode == 0
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return False
+
+
+# ---------------------------------------------------------------------------
+# Known-good baseline (rogue AP detection)
+# ---------------------------------------------------------------------------
+
+
+def load_baseline(filepath: str) -> list[KnownNetwork]:
+    """Load a known-good network baseline from a JSON file.
+
+    Args:
+        filepath: Path to the JSON baseline file.
+
+    Returns:
+        List of :class:`KnownNetwork` objects.  Returns an empty list if the
+        file is missing, unreadable, or contains invalid JSON.
+    """
+    try:
+        with open(filepath, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        _LOGGER.warning("baseline: failed to load %s: %s", filepath, exc)
+        return []
+
+    if not isinstance(data, list):
+        _LOGGER.warning("baseline: expected a JSON array in %s", filepath)
+        return []
+
+    # Check file permissions (warn if world-writable)
+    try:
+        mode = os.stat(filepath).st_mode
+        if mode & stat.S_IWOTH:
+            import sys
+            print(
+                f"WARNING: baseline file {filepath!r} is world-writable "
+                "(chmod 600 recommended)",
+                file=sys.stderr,
+            )
+    except OSError:
+        pass
+
+    result: list[KnownNetwork] = []
+    for i, entry in enumerate(data):
+        if not isinstance(entry, dict):
+            _LOGGER.debug("baseline: skipping non-dict entry at index %d", i)
+            continue
+        ssid = entry.get("ssid")
+        bssid = entry.get("bssid")
+        if not ssid or not bssid:
+            _LOGGER.debug("baseline: skipping entry at index %d (missing ssid/bssid)", i)
+            continue
+        channel = entry.get("channel", 0)
+        if not isinstance(channel, int):
+            channel = 0
+        result.append(KnownNetwork(
+            ssid=str(ssid),
+            bssid=str(bssid).lower(),
+            channel=channel,
+        ))
+
+    _LOGGER.debug("baseline: loaded %d known networks from %s", len(result), filepath)
+    return result
+
+
+def save_baseline(filepath: str, networks: list[Network]) -> int:
+    """Save scanned networks as a known-good baseline JSON file.
+
+    Args:
+        filepath: Path to write the JSON baseline file.
+        networks: List of scanned networks to save.
+
+    Returns:
+        Number of networks written.  Returns 0 if writing fails.
+    """
+    data = [
+        {
+            "ssid": net.ssid,
+            "bssid": net.bssid.lower(),
+            "channel": net.channel,
+        }
+        for net in networks
+        if net.ssid  # skip hidden networks
+    ]
+    try:
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+            f.write("\n")
+    except OSError as exc:
+        _LOGGER.warning("baseline: failed to write %s: %s", filepath, exc)
+        return 0
+
+    _LOGGER.debug("baseline: saved %d networks to %s", len(data), filepath)
+    return len(data)
 
 
 # ---------------------------------------------------------------------------
@@ -1389,6 +1484,16 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="list detected WiFi interfaces and exit",
     )
+    parser.add_argument(
+        "--baseline",
+        metavar="FILE",
+        help="JSON file with known-good SSID/BSSID/channel entries for rogue AP detection",
+    )
+    parser.add_argument(
+        "--save-baseline",
+        metavar="FILE",
+        help="save current scan results as a known-good baseline and exit",
+    )
     return parser.parse_args(argv)
 
 
@@ -1488,6 +1593,22 @@ def main() -> None:
         best = detect_best_interface(devices, monitor_mode=False)
         if best:
             console.print(f"\n[bold]Recommended interface:[/bold] {best}")
+        sys.exit(0)
+
+    # --save-baseline: scan once, save results as baseline, and exit
+    if args.save_baseline:
+        networks = scan_wifi_nmcli(args.interface)
+        count = save_baseline(args.save_baseline, networks)
+        if count:
+            console.print(
+                f"[bold cyan]WiFi Monitor[/bold cyan] — "
+                f"saved {count} network(s) to {args.save_baseline}"
+            )
+        else:
+            console.print(
+                "[bold cyan]WiFi Monitor[/bold cyan] — "
+                "[yellow]no networks saved (scan returned no results)[/yellow]"
+            )
         sys.exit(0)
 
     # Auto-detect interface if not specified via -i

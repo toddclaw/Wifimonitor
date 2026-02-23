@@ -6,6 +6,7 @@ import pytest
 
 from wifimonitor.wifi_common import (
     Network,
+    KnownNetwork,
     signal_to_bars,
     signal_color,
     security_color,
@@ -49,6 +50,22 @@ class TestNetwork:
         assert net.channel == 6
         assert net.security == "WPA2"
         assert net.clients == 3
+
+
+# ---------------------------------------------------------------------------
+# KnownNetwork dataclass
+# ---------------------------------------------------------------------------
+
+class TestKnownNetwork:
+    def test_defaults(self):
+        kn = KnownNetwork(ssid="Home", bssid="aa:bb:cc:dd:ee:01")
+        assert kn.ssid == "Home"
+        assert kn.bssid == "aa:bb:cc:dd:ee:01"
+        assert kn.channel == 0
+
+    def test_custom_channel(self):
+        kn = KnownNetwork(ssid="Home", bssid="aa:bb:cc:dd:ee:01", channel=6)
+        assert kn.channel == 6
 
 
 # ---------------------------------------------------------------------------

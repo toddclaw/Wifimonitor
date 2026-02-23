@@ -63,6 +63,20 @@ class WifiDevice:
     is_up: bool = False
 
 
+@dataclass
+class KnownNetwork:
+    """A trusted WiFi network from the known-good baseline.
+
+    Used for rogue AP detection: any scanned network matching the SSID but
+    *not* matching a known BSSID (or appearing on an unexpected channel)
+    is flagged as potentially rogue.
+    """
+
+    ssid: str
+    bssid: str          # lowercase MAC, e.g. "aa:bb:cc:dd:ee:01"
+    channel: int = 0    # 0 means any channel is acceptable
+
+
 # ---------------------------------------------------------------------------
 # Scanner / Renderer protocols (composition seams)
 # ---------------------------------------------------------------------------
