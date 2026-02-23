@@ -177,7 +177,8 @@ Wifimonitor/
 │   ├── __init__.py            # Package version
 │   ├── __main__.py            # Supports: python -m wifimonitor
 │   ├── wifi_monitor_nitro5.py # Laptop entry point (Rich TUI, nmcli)
-│   └── wifi_common.py         # Shared types/helpers + airodump CSV parser
+│   ├── wifi_common.py         # Shared types/helpers + airodump CSV parser
+│   └── platform_detect.py     # Platform and WiFi interface detection
 ├── wifi_monitor.py            # Raspberry Pi entry point (legacy script)
 ├── pyproject.toml             # Packaging + tool config (ruff, mypy, pytest)
 ├── requirements-laptop.txt    # Laptop dependencies (rich>=13.0,<15)
@@ -185,8 +186,9 @@ Wifimonitor/
 ├── requirements.txt           # Pi dependencies (future)
 ├── .github/workflows/ci.yml   # CI pipeline (test, lint, security)
 ├── tests/
-│   ├── test_wifi_monitor_nitro5.py   # 274 tests — parsing, rendering, scanning, credentials, DNS, ARP, monitor helpers, main()
-│   └── test_wifi_common.py           #  71 tests — helpers, airodump CSV, validation, colors, protocol
+│   ├── test_wifi_monitor_nitro5.py   # Parsing, rendering, scanning, credentials, DNS, ARP, monitor, baseline, main()
+│   ├── test_wifi_common.py           # Helpers, airodump CSV, validation, colors, protocols
+│   └── test_platform_detect.py       # Platform and WiFi interface detection
 ├── CLAUDE.md                  # Agent guide and coding standards
 ├── WORK_IN_PROGRESS.md        # Feature blueprints and running commentary
 └── .claude/agents/            # Claude agent definitions
@@ -209,7 +211,7 @@ python3 -m pytest tests/ -v
 python3 -m pytest tests/ -v --cov=src/ --cov-report=term-missing
 ```
 
-345 tests cover parsing, signal helpers, security mapping, Rich table rendering, subprocess error handling, credentials file loading, network connection, DNS query capture, ARP client detection, connected network indicator, monitor mode helpers, main() integration, input validation, CommandRunner injection, and edge cases.
+414 tests cover parsing, signal helpers, security mapping, Rich table rendering, subprocess error handling, credentials file loading, network connection, DNS query capture, ARP client detection, connected network indicator, monitor mode helpers, platform detection, baseline I/O, scanner/renderer protocols, main() integration, input validation, CommandRunner injection, and edge cases.
 
 ## Security Hardening
 
@@ -245,17 +247,20 @@ If monitor mode shows "client counts enabled" but no networks or client counts a
 
 - ~~**Package layout** (3 pts)~~ -- **Complete.** Project is packaged under `src/wifimonitor/` with a `wifimonitor` console entry point and `python -m wifimonitor` support.
 - ~~**Test coverage for wifi_monitor_nitro5.py** (3 pts)~~ -- **Complete.** Coverage raised to 98% (345 tests).
-- **Scanner and Renderer protocols** (3 pts) -- Define `ScannerProtocol` and `RendererProtocol` abstractions. Split `wifi_monitor_nitro5.py` into `NmcliScanner`, `RichRenderer`, and a thin `MonitorApp` coordinator (Single Responsibility).
+- ~~**Scanner and Renderer protocols** (3 pts)~~ -- **Complete.** `ScannerProtocol` and `RendererProtocol` in `wifi_common.py`, `NmcliScanner` and `RichNetworkRenderer` adapters, `main()` uses protocol-typed composition.
 - **UX agent** (3 pts) -- Create a UX agent that evaluates and suggests improvements for both the CLI/TUI (Rich tables, layout, color, information density) and future GUI surfaces. Integrate into the manager pipeline alongside the existing review agents.
 - ~~**Debugging capability**~~ -- **Complete.** `--debug` flag writes Python debug output to `/tmp/wifi_monitor_nitro5_debug.log`; `_dump_startup_config` logs all settings at startup; strategic debug points throughout `AirodumpScanner`.
 
 ### Features
 
-- **Auto-detect platform and wifi devices** (5 pts) -- Enable running just `wifi_monitor.py` and auto detect OS and WiFi devices. Enumerate interfaces via `/sys/class/net/` or `nmcli`, detect Raspberry Pi via `/proc/device-tree/model`, pick the right scanner automatically.
+- ~~**Auto-detect platform and wifi devices** (5 pts)~~ -- **Complete.** `platform_detect.py` module with `detect_platform()`, `list_wifi_interfaces()`, `detect_best_interface()`. Auto-detects best WiFi interface when `-i` not specified. `--list-devices` shows detected interfaces and exits.
 - **Display RF band for each BSSID** (3 pts) -- Display in output what RF band each BSSID is currently operating in. Add `FREQ` to the nmcli query, map frequency to band (2.4 GHz / 5 GHz / 6 GHz), add a `band` field to the `Network` dataclass, and render in a new table column.
 - **Detect number of clients on each BSSID** (3 pts) -- Per-BSSID client counts already work via `--monitor` on Atheros/Realtek USB adapters. Remaining work: improve UX around Intel WiFi limitation (clear in-TUI message when monitor mode yields zero clients), and add a combined mode that uses `--arp` for the connected BSSID and `--monitor` for others when a compatible adapter is present.
 - **Deauth attack detection** (8 pts) -- Detect deauthentication/disassociation frames targeting your own network and alert in the TUI. Requires monitor mode capture and 802.11 management frame parsing.
-- **Rogue AP detection** (5 pts) -- Identify rogue access points impersonating known SSIDs with mismatched BSSIDs or unexpected channels. Works with existing nmcli scan data; needs a known-good baseline file.
+- **Rogue AP detection** (5 pts) -- Identify rogue access points by comparing scan results against a known-good baseline. Broken into 3 sub-stories:
+  - ~~Story 1 (2 pts)~~ -- **Complete.** Known-good baseline file: `KnownNetwork` dataclass, `load_baseline()` / `save_baseline()` JSON I/O, `--baseline` and `--save-baseline` CLI flags.
+  - Story 2 (2 pts) -- Detection logic: `detect_rogue_aps()` compares scan results against baseline, flags networks with known SSID but unknown BSSID or unexpected channel.
+  - Story 3 (1 pt) -- Alert display: render rogue alerts in TUI (color-coded rows or separate alert table), wire into `main()` scan loop.
 - **Unusual client behavior monitoring** (13 pts) -- Monitor for anomalous client activity on networks you own (e.g. rapid association/disassociation, probe floods). Requires monitor mode and rate-based anomaly heuristics.
 - **Raspberry Pi support** (8 pts) -- Monitor mode scanning via airodump-ng with PiTFT display output. The CSV parser (`parse_airodump_csv`) and shared data structures are already implemented.
 
