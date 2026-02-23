@@ -27,23 +27,18 @@ any future display code.
 `main()` now wraps the scan loop in a `try/except KeyboardInterrupt` block and
 exits cleanly with `sys.exit(0)`.
 
-### P1 — Remaining
+### P1 — All Resolved
 
-**`scan_wifi_nmcli()` calls subprocess directly**
-While exception handling (TimeoutExpired, FileNotFoundError, OSError) has been
-added, the function still calls `subprocess.run` directly. A `CommandRunner`
-injection seam would improve testability. Currently tested via `unittest.mock.patch`.
+**`scan_wifi_nmcli()` calls subprocess directly** -- RESOLVED.
+`CommandRunner` protocol and `SubprocessRunner` injected into `scan_wifi_nmcli()`,
+`connect_wifi_nmcli()`, and `DnsTracker`. Tested via both injection and `mock.patch`.
 
-**`_COLOR_MAP` silently returns "white" for unknown colors**
-`wifi_common.py` defines colors as RGB tuples. If a new color is added to
-`wifi_common` but not to `_COLOR_MAP` in `wifi_monitor_nitro5.py`, it
-silently renders as white with no warning. These two must stay in sync or
-be unified — the lookup table is a maintenance hazard.
+**`_COLOR_MAP` silently returns "white" for unknown colors** -- RESOLVED.
+Unified into `COLOR_TO_RICH` in `wifi_common.py` alongside RGB constants.
+No separate sync hazard.
 
-**`parse_airodump_csv()` ignores malformed rows silently**
-Rows with the wrong number of fields are skipped with no logging.
-During Pi development, silent data loss will make debugging very hard.
-At minimum, log skipped rows at DEBUG level.
+**`parse_airodump_csv()` ignores malformed rows silently** -- RESOLVED.
+Skipped rows now logged at DEBUG level via `logger.debug()`.
 
 ### Resolved (formerly P1/P2)
 

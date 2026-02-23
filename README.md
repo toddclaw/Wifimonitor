@@ -191,9 +191,10 @@ Wifimonitor/
 ├── WORK_IN_PROGRESS.md        # Feature blueprints and running commentary
 └── .claude/agents/            # Claude agent definitions
     ├── architect-agent.md     # Architecture research and design
-    ├── tdd-agent.md           # TDD / Software Craftsmanship
+    ├── tdd-agent.md           # TDD / Lead Coder
     ├── devsecops-agent.md     # Security review, dependency audit
     ├── red-team-agent.md      # Adversarial review
+    ├── reviewer-agent.md      # Final audit gate (PASS/FAIL)
     ├── scrum-master-agent.md  # Backlog grooming, prioritization, retros
     └── manager-agent.md       # Orchestrator (coordinates all agents)
 ```
