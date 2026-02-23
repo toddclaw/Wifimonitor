@@ -15,6 +15,8 @@ from wifimonitor.wifi_common import (
     is_valid_channel,
     CommandRunner,
     SubprocessRunner,
+    ScannerProtocol,
+    RendererProtocol,
     COLOR_TO_RICH,
     GREEN, YELLOW, RED, ORANGE, BLACK, WHITE, CYAN, GRAY, DIM,
 )
@@ -465,3 +467,68 @@ class TestCommandRunnerProtocol:
         fake: CommandRunner = FakeRunner()
         result = fake.run(["test"])
         assert result.returncode == 0
+
+
+# ---------------------------------------------------------------------------
+# ScannerProtocol — scanner injection seam
+# ---------------------------------------------------------------------------
+
+class TestScannerProtocol:
+    """ScannerProtocol defines a scanner that returns list[Network]."""
+
+    def test_custom_scanner_satisfies_protocol(self):
+        """A class with scan() -> list[Network] satisfies ScannerProtocol."""
+        class FakeScanner:
+            def scan(self) -> list[Network]:
+                return [Network(bssid="aa:bb:cc:dd:ee:ff", ssid="Test")]
+
+        scanner: ScannerProtocol = FakeScanner()
+        result = scanner.scan()
+        assert len(result) == 1
+        assert result[0].ssid == "Test"
+
+    def test_scanner_returning_empty_list(self):
+        """A scanner that returns an empty list is valid."""
+        class EmptyScanner:
+            def scan(self) -> list[Network]:
+                return []
+
+        scanner: ScannerProtocol = EmptyScanner()
+        assert scanner.scan() == []
+
+    def test_protocol_requires_scan_method(self):
+        """ScannerProtocol requires a scan() method."""
+        assert hasattr(ScannerProtocol, "scan")
+
+
+# ---------------------------------------------------------------------------
+# RendererProtocol — renderer injection seam
+# ---------------------------------------------------------------------------
+
+class TestRendererProtocol:
+    """RendererProtocol defines a renderer that takes networks and returns a renderable."""
+
+    def test_custom_renderer_satisfies_protocol(self):
+        """A class with render(networks) satisfies RendererProtocol."""
+        class FakeRenderer:
+            def render(self, networks, **kwargs):
+                return f"Rendered {len(networks)} networks"
+
+        renderer: RendererProtocol = FakeRenderer()
+        nets = [Network(bssid="aa:bb:cc:dd:ee:ff", ssid="Test")]
+        result = renderer.render(nets)
+        assert "1 networks" in result
+
+    def test_renderer_accepts_keyword_args(self):
+        """Renderer can accept arbitrary keyword args for flexibility."""
+        class FakeRenderer:
+            def render(self, networks, **kwargs):
+                return kwargs
+
+        renderer: RendererProtocol = FakeRenderer()
+        result = renderer.render([], credentials={"ssid": "pass"})
+        assert result == {"credentials": {"ssid": "pass"}}
+
+    def test_protocol_requires_render_method(self):
+        """RendererProtocol requires a render() method."""
+        assert hasattr(RendererProtocol, "render")

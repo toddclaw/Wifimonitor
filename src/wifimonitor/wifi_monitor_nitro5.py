@@ -1294,6 +1294,54 @@ def build_dns_table(domains: list[tuple[str, int]]) -> Table:
 
 
 # ---------------------------------------------------------------------------
+# Protocol adapters (ScannerProtocol / RendererProtocol)
+# ---------------------------------------------------------------------------
+
+class NmcliScanner:
+    """Scanner that uses nmcli to detect WiFi networks.
+
+    Wraps :func:`scan_wifi_nmcli` into a class conforming to
+    :class:`~wifimonitor.wifi_common.ScannerProtocol`.
+    """
+
+    def __init__(
+        self,
+        interface: str | None = None,
+        runner: CommandRunner | None = None,
+    ) -> None:
+        self._interface = interface
+        self._runner = runner
+
+    def scan(self) -> list[Network]:
+        """Scan for WiFi networks via nmcli."""
+        return scan_wifi_nmcli(self._interface, runner=self._runner)
+
+
+class RichNetworkRenderer:
+    """Renderer that builds a Rich Table of WiFi networks.
+
+    Wraps :func:`build_table` into a class conforming to
+    :class:`~wifimonitor.wifi_common.RendererProtocol`.
+    """
+
+    def render(
+        self,
+        networks: list[Network],
+        *,
+        credentials: dict[str, str] | None = None,
+        connected_bssid: str | None = None,
+        caption_override: str | None = None,
+    ) -> Table:
+        """Render *networks* as a Rich Table."""
+        return build_table(
+            networks,
+            credentials=credentials,
+            caption_override=caption_override,
+            connected_bssid=connected_bssid,
+        )
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -1456,6 +1504,8 @@ def main() -> None:
     airodump_scanner: AirodumpScanner | None = None
     airodump_failure_reason: str | None = None
     arp_scanner: ArpScanner | None = None
+    nmcli_scanner = NmcliScanner(interface=args.interface)
+    renderer = RichNetworkRenderer()
 
     if args.arp:
         arp_scanner = ArpScanner(interface=args.interface)
@@ -1554,11 +1604,11 @@ def main() -> None:
                         caption_override = (
                             f"airodump exited — nmcli fallback (check {AIRODUMP_STDERR_LOG})"
                         )
-                        networks = scan_wifi_nmcli(args.interface)
+                        networks = nmcli_scanner.scan()
                     else:
                         networks = airodump_scanner.scan()
                 else:
-                    networks = scan_wifi_nmcli(args.interface)
+                    networks = nmcli_scanner.scan()
 
                 connected_bssid = _get_connected_bssid(
                     args.interface, runner=_DEFAULT_RUNNER
@@ -1572,7 +1622,7 @@ def main() -> None:
                                 net.clients = arp_count
                                 break
 
-                network_table = build_table(
+                network_table = renderer.render(
                     networks,
                     credentials=credentials,
                     caption_override=caption_override,

@@ -64,6 +64,36 @@ class WifiDevice:
 
 
 # ---------------------------------------------------------------------------
+# Scanner / Renderer protocols (composition seams)
+# ---------------------------------------------------------------------------
+
+class ScannerProtocol(Protocol):
+    """Protocol for WiFi network scanners.
+
+    Any class with a ``scan()`` method returning ``list[Network]`` satisfies
+    this protocol.  Enables swapping nmcli, airodump-ng, or mock scanners
+    without modifying the caller.
+    """
+
+    def scan(self) -> list[Network]:
+        """Scan for WiFi networks and return detected networks."""
+        ...  # pragma: no cover
+
+
+class RendererProtocol(Protocol):
+    """Protocol for network display renderers.
+
+    Any class with a ``render(networks, **kwargs)`` method satisfies this
+    protocol.  Enables swapping Rich TUI, PiTFT, or plain-text renderers
+    without modifying the caller.
+    """
+
+    def render(self, networks: list[Network], **kwargs: Any) -> Any:
+        """Render *networks* into a displayable object."""
+        ...  # pragma: no cover
+
+
+# ---------------------------------------------------------------------------
 # Command runner protocol (subprocess injection seam)
 # ---------------------------------------------------------------------------
 

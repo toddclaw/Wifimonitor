@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, mock_open, patch
 
 import pytest
 
-from wifimonitor.wifi_common import Network
+from wifimonitor.wifi_common import Network, ScannerProtocol, RendererProtocol
 from wifimonitor.wifi_monitor_nitro5 import (
     MIN_PYTHON,
     parse_nmcli_output,
@@ -35,6 +35,8 @@ from wifimonitor.wifi_monitor_nitro5 import (
     _parse_args,
     AirodumpScanner,
     ArpScanner,
+    NmcliScanner,
+    RichNetworkRenderer,
     _get_connected_bssid,
     _get_subnet,
     _parse_arp_scan_output,
@@ -1866,6 +1868,105 @@ class TestMainListDevices:
             console_inst = mock_console_cls.return_value
             printed = " ".join(str(c) for c in console_inst.print.call_args_list)
             assert "No WiFi" in printed
+
+
+# ---------------------------------------------------------------------------
+# NmcliScanner — adapter wrapping scan_wifi_nmcli
+# ---------------------------------------------------------------------------
+
+class TestNmcliScanner:
+    """NmcliScanner wraps scan_wifi_nmcli() as a ScannerProtocol-conforming class."""
+
+    def test_satisfies_scanner_protocol(self):
+        """NmcliScanner is a structural subtype of ScannerProtocol."""
+        scanner: ScannerProtocol = NmcliScanner()
+        assert hasattr(scanner, "scan")
+        assert callable(scanner.scan)
+
+    def test_scan_delegates_to_scan_wifi_nmcli(self):
+        """scan() delegates to scan_wifi_nmcli with the stored interface."""
+        nets = [Network(bssid="aa:bb:cc:dd:ee:01", ssid="Test", signal=-55)]
+        with patch("wifimonitor.wifi_monitor_nitro5.scan_wifi_nmcli", return_value=nets) as mock_scan:
+            scanner = NmcliScanner(interface="wlan0")
+            result = scanner.scan()
+            assert result == nets
+            mock_scan.assert_called_once_with("wlan0", runner=None)
+
+    def test_scan_passes_runner(self):
+        """scan() forwards the injected runner to scan_wifi_nmcli."""
+        fake_runner = MagicMock()
+        nets = [Network(bssid="aa:bb:cc:dd:ee:01", ssid="Test")]
+        with patch("wifimonitor.wifi_monitor_nitro5.scan_wifi_nmcli", return_value=nets) as mock_scan:
+            scanner = NmcliScanner(interface="wlan1", runner=fake_runner)
+            scanner.scan()
+            mock_scan.assert_called_once_with("wlan1", runner=fake_runner)
+
+    def test_scan_no_interface(self):
+        """scan() passes None when no interface specified."""
+        with patch("wifimonitor.wifi_monitor_nitro5.scan_wifi_nmcli", return_value=[]) as mock_scan:
+            scanner = NmcliScanner()
+            result = scanner.scan()
+            assert result == []
+            mock_scan.assert_called_once_with(None, runner=None)
+
+    def test_airodump_scanner_also_satisfies_protocol(self):
+        """AirodumpScanner already has scan() -> list[Network], so it satisfies ScannerProtocol."""
+        assert hasattr(AirodumpScanner, "scan")
+        assert callable(getattr(AirodumpScanner, "scan"))
+
+
+# ---------------------------------------------------------------------------
+# RichNetworkRenderer — adapter wrapping build_table
+# ---------------------------------------------------------------------------
+
+class TestRichNetworkRenderer:
+    """RichNetworkRenderer wraps build_table() as a RendererProtocol-conforming class."""
+
+    def test_satisfies_renderer_protocol(self):
+        """RichNetworkRenderer is a structural subtype of RendererProtocol."""
+        renderer: RendererProtocol = RichNetworkRenderer()
+        assert hasattr(renderer, "render")
+        assert callable(renderer.render)
+
+    def test_render_returns_table(self):
+        """render() returns a Rich Table from build_table()."""
+        from rich.table import Table
+        nets = [Network(bssid="aa:bb:cc:dd:ee:01", ssid="HomeNet", signal=-55, channel=6, security="WPA2")]
+        renderer = RichNetworkRenderer()
+        result = renderer.render(nets)
+        assert isinstance(result, Table)
+
+    def test_render_passes_credentials(self):
+        """render() forwards credentials kwarg to build_table()."""
+        nets = [Network(bssid="aa:bb:cc:dd:ee:01", ssid="HomeNet", signal=-55, channel=6, security="WPA2")]
+        renderer = RichNetworkRenderer()
+        result = renderer.render(nets, credentials={"HomeNet": "pass123"})
+        # The table should have a "Key" column when credentials are provided
+        col_headers = [c.header for c in result.columns]
+        assert "Key" in col_headers
+
+    def test_render_passes_connected_bssid(self):
+        """render() forwards connected_bssid kwarg to build_table()."""
+        nets = [Network(bssid="aa:bb:cc:dd:ee:01", ssid="HomeNet", signal=-55, channel=6, security="WPA2")]
+        renderer = RichNetworkRenderer()
+        result = renderer.render(nets, connected_bssid="aa:bb:cc:dd:ee:01")
+        # Should contain a "Con" column (always present)
+        col_headers = [c.header for c in result.columns]
+        assert "Con" in col_headers
+
+    def test_render_passes_caption_override(self):
+        """render() forwards caption_override kwarg to build_table()."""
+        nets = [Network(bssid="aa:bb:cc:dd:ee:01", ssid="HomeNet", signal=-55)]
+        renderer = RichNetworkRenderer()
+        result = renderer.render(nets, caption_override="custom caption")
+        assert result.caption == "custom caption"
+
+    def test_render_empty_networks(self):
+        """render() handles empty network list."""
+        from rich.table import Table
+        renderer = RichNetworkRenderer()
+        result = renderer.render([])
+        assert isinstance(result, Table)
 
 
 # ---------------------------------------------------------------------------
