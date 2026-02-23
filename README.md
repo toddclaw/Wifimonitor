@@ -211,7 +211,7 @@ python3 -m pytest tests/ -v
 python3 -m pytest tests/ -v --cov=src/ --cov-report=term-missing
 ```
 
-414 tests cover parsing, signal helpers, security mapping, Rich table rendering, subprocess error handling, credentials file loading, network connection, DNS query capture, ARP client detection, connected network indicator, monitor mode helpers, platform detection, baseline I/O, scanner/renderer protocols, main() integration, input validation, CommandRunner injection, and edge cases.
+426 tests cover parsing, signal helpers, security mapping, Rich table rendering, subprocess error handling, credentials file loading, network connection, DNS query capture, ARP client detection, connected network indicator, monitor mode helpers, platform detection, baseline I/O, rogue AP detection, scanner/renderer protocols, main() integration, input validation, CommandRunner injection, and edge cases.
 
 ## Security Hardening
 
@@ -259,7 +259,7 @@ If monitor mode shows "client counts enabled" but no networks or client counts a
 - **Deauth attack detection** (8 pts) -- Detect deauthentication/disassociation frames targeting your own network and alert in the TUI. Requires monitor mode capture and 802.11 management frame parsing.
 - **Rogue AP detection** (5 pts) -- Identify rogue access points by comparing scan results against a known-good baseline. Broken into 3 sub-stories:
   - ~~Story 1 (2 pts)~~ -- **Complete.** Known-good baseline file: `KnownNetwork` dataclass, `load_baseline()` / `save_baseline()` JSON I/O, `--baseline` and `--save-baseline` CLI flags.
-  - Story 2 (2 pts) -- Detection logic: `detect_rogue_aps()` compares scan results against baseline, flags networks with known SSID but unknown BSSID or unexpected channel.
+  - ~~Story 2 (2 pts)~~ -- **Complete.** Detection logic: `detect_rogue_aps()` compares scan results against baseline, flags networks with known SSID but unknown BSSID (`unknown_bssid`) or unexpected channel (`unexpected_channel`). `RogueAlert` dataclass, case-insensitive BSSID matching, channel=0 wildcard support.
   - Story 3 (1 pt) -- Alert display: render rogue alerts in TUI (color-coded rows or separate alert table), wire into `main()` scan loop.
 - **Unusual client behavior monitoring** (13 pts) -- Monitor for anomalous client activity on networks you own (e.g. rapid association/disassociation, probe floods). Requires monitor mode and rate-based anomaly heuristics.
 - **Raspberry Pi support** (8 pts) -- Monitor mode scanning via airodump-ng with PiTFT display output. The CSV parser (`parse_airodump_csv`) and shared data structures are already implemented.

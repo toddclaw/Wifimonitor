@@ -46,7 +46,7 @@ from rich.markup import escape
 from rich.table import Table
 
 from wifimonitor.wifi_common import (
-    Network, KnownNetwork, parse_airodump_csv,
+    Network, KnownNetwork, RogueAlert, parse_airodump_csv,
     signal_to_bars, signal_color, security_color,
     COLOR_TO_RICH,
     CommandRunner, SubprocessRunner,
@@ -270,6 +270,79 @@ def save_baseline(filepath: str, networks: list[Network]) -> int:
 
     _LOGGER.debug("baseline: saved %d networks to %s", len(data), filepath)
     return len(data)
+
+
+# ---------------------------------------------------------------------------
+# Rogue AP detection
+# ---------------------------------------------------------------------------
+
+
+def detect_rogue_aps(
+    networks: list[Network],
+    baseline: list[KnownNetwork],
+) -> list[RogueAlert]:
+    """Compare scanned networks against a known-good baseline.
+
+    For each scanned network whose SSID appears in the baseline, checks:
+
+    1. **Unknown BSSID** — the SSID is known but this BSSID is not in the
+       baseline → ``reason="unknown_bssid"``.
+    2. **Unexpected channel** — the BSSID *is* known but the channel does
+       not match (and the baseline channel is not 0, which means "any") →
+       ``reason="unexpected_channel"``.
+
+    Networks whose SSID is *not* in the baseline (or that have an empty
+    SSID) are silently ignored — they are not tracked.
+
+    Args:
+        networks: Current scan results.
+        baseline: Known-good SSID/BSSID/channel tuples.
+
+    Returns:
+        A list of :class:`RogueAlert` objects (may be empty).
+    """
+    if not networks or not baseline:
+        return []
+
+    # Build lookup: ssid -> {bssid: channel, ...}
+    ssid_to_bssids: dict[str, dict[str, int]] = {}
+    for kn in baseline:
+        ssid_to_bssids.setdefault(kn.ssid, {})[kn.bssid.lower()] = kn.channel
+
+    alerts: list[RogueAlert] = []
+    for net in networks:
+        if not net.ssid:
+            continue  # hidden — skip
+        known = ssid_to_bssids.get(net.ssid)
+        if known is None:
+            continue  # SSID not in baseline — not tracked
+
+        expected_bssids = sorted(known.keys())
+        expected_channels = sorted(known.values())
+        bssid_lower = net.bssid.lower()
+
+        if bssid_lower not in known:
+            alerts.append(RogueAlert(
+                network=net,
+                reason="unknown_bssid",
+                expected_bssids=expected_bssids,
+                expected_channels=expected_channels,
+            ))
+        else:
+            baseline_channel = known[bssid_lower]
+            if (
+                baseline_channel != 0
+                and net.channel != 0
+                and net.channel != baseline_channel
+            ):
+                alerts.append(RogueAlert(
+                    network=net,
+                    reason="unexpected_channel",
+                    expected_bssids=expected_bssids,
+                    expected_channels=expected_channels,
+                ))
+
+    return alerts
 
 
 # ---------------------------------------------------------------------------

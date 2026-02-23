@@ -77,6 +77,20 @@ class KnownNetwork:
     channel: int = 0    # 0 means any channel is acceptable
 
 
+@dataclass
+class RogueAlert:
+    """An alert for a potentially rogue access point.
+
+    Generated when a scanned network matches a known SSID but has an
+    unrecognised BSSID or appears on an unexpected channel.
+    """
+
+    network: Network            # the scanned network that triggered the alert
+    reason: str                 # "unknown_bssid" or "unexpected_channel"
+    expected_bssids: list[str]  # known BSSIDs for this SSID
+    expected_channels: list[int]  # known channels (0 = any)
+
+
 # ---------------------------------------------------------------------------
 # Scanner / Renderer protocols (composition seams)
 # ---------------------------------------------------------------------------

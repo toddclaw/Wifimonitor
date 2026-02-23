@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, mock_open, patch
 
 import pytest
 
-from wifimonitor.wifi_common import Network, ScannerProtocol, RendererProtocol
+from wifimonitor.wifi_common import Network, KnownNetwork, ScannerProtocol, RendererProtocol
 from wifimonitor.wifi_monitor_nitro5 import (
     MIN_PYTHON,
     parse_nmcli_output,
@@ -31,6 +31,7 @@ from wifimonitor.wifi_monitor_nitro5 import (
     connect_wifi_nmcli,
     load_baseline,
     save_baseline,
+    detect_rogue_aps,
     parse_tcpdump_dns_line,
     DnsTracker,
     build_dns_table,
@@ -1974,6 +1975,107 @@ class TestSaveBaseline:
         assert loaded[0].ssid == "Home"
         assert loaded[0].bssid == "aa:bb:cc:dd:ee:01"
         assert loaded[0].channel == 6
+
+
+# ---------------------------------------------------------------------------
+# detect_rogue_aps — rogue AP detection logic
+# ---------------------------------------------------------------------------
+
+class TestDetectRogueAps:
+    """detect_rogue_aps compares scanned networks against a known-good baseline."""
+
+    def _baseline(self) -> list[KnownNetwork]:
+        """Two known APs for 'HomeNet' on channels 6 and 36."""
+        return [
+            KnownNetwork(ssid="HomeNet", bssid="aa:bb:cc:dd:ee:01", channel=6),
+            KnownNetwork(ssid="HomeNet", bssid="aa:bb:cc:dd:ee:02", channel=36),
+        ]
+
+    def test_no_alert_when_network_matches_baseline(self):
+        """A network matching a known BSSID and channel produces no alert."""
+        nets = [Network(bssid="aa:bb:cc:dd:ee:01", ssid="HomeNet", channel=6, signal=-55)]
+        alerts = detect_rogue_aps(nets, self._baseline())
+        assert alerts == []
+
+    def test_unknown_bssid_triggers_alert(self):
+        """A network with a known SSID but unknown BSSID triggers unknown_bssid alert."""
+        nets = [Network(bssid="ff:ff:ff:ff:ff:ff", ssid="HomeNet", channel=6, signal=-60)]
+        alerts = detect_rogue_aps(nets, self._baseline())
+        assert len(alerts) == 1
+        assert alerts[0].reason == "unknown_bssid"
+        assert alerts[0].network.bssid == "ff:ff:ff:ff:ff:ff"
+        assert "aa:bb:cc:dd:ee:01" in alerts[0].expected_bssids
+        assert "aa:bb:cc:dd:ee:02" in alerts[0].expected_bssids
+
+    def test_unexpected_channel_triggers_alert(self):
+        """A known BSSID on a different channel triggers unexpected_channel alert."""
+        nets = [Network(bssid="aa:bb:cc:dd:ee:01", ssid="HomeNet", channel=11, signal=-55)]
+        alerts = detect_rogue_aps(nets, self._baseline())
+        assert len(alerts) == 1
+        assert alerts[0].reason == "unexpected_channel"
+        assert alerts[0].network.channel == 11
+        assert 6 in alerts[0].expected_channels
+
+    def test_unknown_ssid_not_in_baseline_ignored(self):
+        """A network whose SSID is not in the baseline produces no alert."""
+        nets = [Network(bssid="11:22:33:44:55:66", ssid="GuestNet", channel=1, signal=-70)]
+        alerts = detect_rogue_aps(nets, self._baseline())
+        assert alerts == []
+
+    def test_hidden_network_ignored(self):
+        """A network with empty SSID (hidden) is never flagged."""
+        nets = [Network(bssid="ff:ff:ff:ff:ff:ff", ssid="", channel=6, signal=-65)]
+        alerts = detect_rogue_aps(nets, self._baseline())
+        assert alerts == []
+
+    def test_empty_baseline_no_alerts(self):
+        """An empty baseline means nothing is tracked — no alerts."""
+        nets = [Network(bssid="aa:bb:cc:dd:ee:01", ssid="HomeNet", channel=6)]
+        alerts = detect_rogue_aps(nets, [])
+        assert alerts == []
+
+    def test_empty_networks_no_alerts(self):
+        """No scanned networks means no alerts."""
+        alerts = detect_rogue_aps([], self._baseline())
+        assert alerts == []
+
+    def test_channel_zero_baseline_accepts_any_channel(self):
+        """Baseline channel=0 means any channel is acceptable for that BSSID."""
+        baseline = [KnownNetwork(ssid="Flex", bssid="aa:bb:cc:dd:ee:03", channel=0)]
+        nets = [Network(bssid="aa:bb:cc:dd:ee:03", ssid="Flex", channel=149, signal=-50)]
+        alerts = detect_rogue_aps(nets, baseline)
+        assert alerts == []
+
+    def test_multiple_alerts_from_one_scan(self):
+        """Multiple rogue networks in a single scan produce multiple alerts."""
+        nets = [
+            Network(bssid="ff:ff:ff:ff:ff:01", ssid="HomeNet", channel=6, signal=-60),
+            Network(bssid="ff:ff:ff:ff:ff:02", ssid="HomeNet", channel=11, signal=-70),
+        ]
+        alerts = detect_rogue_aps(nets, self._baseline())
+        assert len(alerts) == 2
+        assert all(a.reason == "unknown_bssid" for a in alerts)
+
+    def test_bssid_comparison_case_insensitive(self):
+        """BSSID comparison is case-insensitive (baseline lowercase, scan uppercase)."""
+        baseline = [KnownNetwork(ssid="HomeNet", bssid="aa:bb:cc:dd:ee:01", channel=6)]
+        nets = [Network(bssid="AA:BB:CC:DD:EE:01", ssid="HomeNet", channel=6, signal=-55)]
+        alerts = detect_rogue_aps(nets, baseline)
+        assert alerts == []
+
+    def test_expected_channels_populated(self):
+        """The expected_channels field lists all known channels for the SSID."""
+        nets = [Network(bssid="ff:ff:ff:ff:ff:ff", ssid="HomeNet", channel=6, signal=-60)]
+        alerts = detect_rogue_aps(nets, self._baseline())
+        assert len(alerts) == 1
+        assert sorted(alerts[0].expected_channels) == [6, 36]
+
+    def test_known_bssid_channel_zero_scan_no_alert(self):
+        """Scanned channel=0 does not trigger unexpected_channel for a known BSSID."""
+        baseline = [KnownNetwork(ssid="HomeNet", bssid="aa:bb:cc:dd:ee:01", channel=6)]
+        nets = [Network(bssid="aa:bb:cc:dd:ee:01", ssid="HomeNet", channel=0, signal=-55)]
+        alerts = detect_rogue_aps(nets, baseline)
+        assert alerts == []
 
 
 # ---------------------------------------------------------------------------
