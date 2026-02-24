@@ -46,7 +46,7 @@ from rich.markup import escape
 from rich.table import Table
 
 from wifimonitor.wifi_common import (
-    Network, KnownNetwork, RogueAlert, parse_airodump_csv,
+    Network, KnownNetwork, RogueAlert, DeauthEvent, parse_airodump_csv,
     signal_to_bars, signal_color, security_color,
     COLOR_TO_RICH,
     CommandRunner, SubprocessRunner,
@@ -343,6 +343,41 @@ def detect_rogue_aps(
                 ))
 
     return alerts
+
+
+# ---------------------------------------------------------------------------
+# Deauth / disassoc frame parsing (tcpdump -e on monitor interface)
+# ---------------------------------------------------------------------------
+
+# Typical tcpdump -e output on a monitor interface:
+#   11:04:34.360700 314us BSSID:00:14:6c:7e:40:80 DA:00:0f:b5:46:11:19
+#   SA:00:14:6c:7e:40:80 DeAuthentication: Class 3 frame received …
+_MAC = r"[0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5}"
+_DEAUTH_RE = re.compile(
+    rf"BSSID:(?P<bssid>{_MAC})\s+"
+    rf"DA:(?P<da>{_MAC})\s+"
+    rf"SA:(?P<sa>{_MAC})\s+"
+    rf"(?P<type>DeAuthentication|Disassociation):\s*(?P<reason>.*)",
+)
+
+
+def parse_tcpdump_deauth_line(line: str) -> DeauthEvent | None:
+    """Extract a deauth/disassoc event from a tcpdump ``-e`` output line.
+
+    Returns a :class:`DeauthEvent` if the line describes a
+    DeAuthentication or Disassociation frame, otherwise ``None``.
+    """
+    match = _DEAUTH_RE.search(line)
+    if not match:
+        return None
+    subtype = "deauth" if match.group("type") == "DeAuthentication" else "disassoc"
+    return DeauthEvent(
+        bssid=match.group("bssid").lower(),
+        source=match.group("sa").lower(),
+        destination=match.group("da").lower(),
+        reason=match.group("reason").strip(),
+        subtype=subtype,
+    )
 
 
 # ---------------------------------------------------------------------------

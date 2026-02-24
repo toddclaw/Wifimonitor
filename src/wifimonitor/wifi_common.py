@@ -91,6 +91,20 @@ class RogueAlert:
     expected_channels: list[int]  # known channels (0 = any)
 
 
+@dataclass
+class DeauthEvent:
+    """A single captured deauthentication or disassociation frame.
+
+    Parsed from tcpdump ``-e`` output on a monitor-mode interface.
+    """
+
+    bssid: str          # lowercase MAC, e.g. "00:14:6c:7e:40:80"
+    source: str         # SA — who sent the frame (lowercase)
+    destination: str    # DA — target (lowercase), "ff:ff:ff:ff:ff:ff" for broadcast
+    reason: str         # reason text from tcpdump, e.g. "Class 3 frame received…"
+    subtype: str        # "deauth" or "disassoc"
+
+
 # ---------------------------------------------------------------------------
 # Scanner / Renderer protocols (composition seams)
 # ---------------------------------------------------------------------------

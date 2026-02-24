@@ -7,6 +7,7 @@ import pytest
 from wifimonitor.wifi_common import (
     Network,
     KnownNetwork,
+    DeauthEvent,
     signal_to_bars,
     signal_color,
     security_color,
@@ -66,6 +67,32 @@ class TestKnownNetwork:
     def test_custom_channel(self):
         kn = KnownNetwork(ssid="Home", bssid="aa:bb:cc:dd:ee:01", channel=6)
         assert kn.channel == 6
+
+
+class TestDeauthEvent:
+    def test_defaults(self):
+        evt = DeauthEvent(
+            bssid="aa:bb:cc:dd:ee:01",
+            source="aa:bb:cc:dd:ee:01",
+            destination="ff:ff:ff:ff:ff:ff",
+            reason="Unspecified",
+            subtype="deauth",
+        )
+        assert evt.bssid == "aa:bb:cc:dd:ee:01"
+        assert evt.source == "aa:bb:cc:dd:ee:01"
+        assert evt.destination == "ff:ff:ff:ff:ff:ff"
+        assert evt.reason == "Unspecified"
+        assert evt.subtype == "deauth"
+
+    def test_disassoc_subtype(self):
+        evt = DeauthEvent(
+            bssid="00:11:22:33:44:55",
+            source="00:11:22:33:44:55",
+            destination="66:77:88:99:aa:bb",
+            reason="Station leaving",
+            subtype="disassoc",
+        )
+        assert evt.subtype == "disassoc"
 
 
 # ---------------------------------------------------------------------------

@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, mock_open, patch
 
 import pytest
 
-from wifimonitor.wifi_common import Network, KnownNetwork, RogueAlert, ScannerProtocol, RendererProtocol
+from wifimonitor.wifi_common import Network, KnownNetwork, RogueAlert, DeauthEvent, ScannerProtocol, RendererProtocol
 from wifimonitor.wifi_monitor_nitro5 import (
     MIN_PYTHON,
     parse_nmcli_output,
@@ -33,6 +33,7 @@ from wifimonitor.wifi_monitor_nitro5 import (
     save_baseline,
     detect_rogue_aps,
     build_rogue_table,
+    parse_tcpdump_deauth_line,
     parse_tcpdump_dns_line,
     DnsTracker,
     build_dns_table,
@@ -844,6 +845,104 @@ class TestParseTcpdumpDnsLine:
     def test_domain_with_numbers(self):
         line = "20:15:30.123 IP 192.168.1.100.54321 > 8.8.8.8.53: 65432+ A? s3.us-east-1.amazonaws.com. (44)"
         assert parse_tcpdump_dns_line(line) == "s3.us-east-1.amazonaws.com"
+
+
+# ---------------------------------------------------------------------------
+# parse_tcpdump_deauth_line — deauth/disassoc frame parser
+# ---------------------------------------------------------------------------
+
+class TestParseTcpdumpDeauthLine:
+    """parse_tcpdump_deauth_line extracts deauth/disassoc events from tcpdump -e output."""
+
+    DEAUTH_LINE = (
+        "11:04:34.360700 314us BSSID:00:14:6c:7e:40:80 "
+        "DA:00:0f:b5:46:11:19 SA:00:14:6c:7e:40:80 "
+        "DeAuthentication: Class 3 frame received from nonassociated station"
+    )
+
+    DISASSOC_LINE = (
+        "12:30:01.123456 200us BSSID:aa:bb:cc:dd:ee:01 "
+        "DA:11:22:33:44:55:66 SA:aa:bb:cc:dd:ee:01 "
+        "Disassociation: Deauthenticated because sending station is leaving"
+    )
+
+    BROADCAST_DEAUTH = (
+        "13:00:00.000000 100us BSSID:00:14:6c:7e:40:80 "
+        "DA:ff:ff:ff:ff:ff:ff SA:00:14:6c:7e:40:80 "
+        "DeAuthentication: Unspecified"
+    )
+
+    def test_valid_deauth_line_returns_event(self):
+        result = parse_tcpdump_deauth_line(self.DEAUTH_LINE)
+        assert result is not None
+        assert isinstance(result, DeauthEvent)
+        assert result.subtype == "deauth"
+
+    def test_deauth_bssid_lowercased(self):
+        result = parse_tcpdump_deauth_line(self.DEAUTH_LINE)
+        assert result is not None
+        assert result.bssid == "00:14:6c:7e:40:80"
+
+    def test_deauth_source_and_destination(self):
+        result = parse_tcpdump_deauth_line(self.DEAUTH_LINE)
+        assert result is not None
+        assert result.source == "00:14:6c:7e:40:80"
+        assert result.destination == "00:0f:b5:46:11:19"
+
+    def test_deauth_reason_captured(self):
+        result = parse_tcpdump_deauth_line(self.DEAUTH_LINE)
+        assert result is not None
+        assert "Class 3 frame" in result.reason
+
+    def test_valid_disassoc_line_returns_event(self):
+        result = parse_tcpdump_deauth_line(self.DISASSOC_LINE)
+        assert result is not None
+        assert result.subtype == "disassoc"
+        assert result.bssid == "aa:bb:cc:dd:ee:01"
+
+    def test_disassoc_reason_captured(self):
+        result = parse_tcpdump_deauth_line(self.DISASSOC_LINE)
+        assert result is not None
+        assert "leaving" in result.reason
+
+    def test_broadcast_deauth_destination(self):
+        result = parse_tcpdump_deauth_line(self.BROADCAST_DEAUTH)
+        assert result is not None
+        assert result.destination == "ff:ff:ff:ff:ff:ff"
+
+    def test_non_deauth_line_returns_none(self):
+        line = "11:04:34.360700 BSSID:00:14:6c:7e:40:80 Beacon (MyNetwork) [6.0 Mbit]"
+        assert parse_tcpdump_deauth_line(line) is None
+
+    def test_empty_string_returns_none(self):
+        assert parse_tcpdump_deauth_line("") is None
+
+    def test_dns_line_returns_none(self):
+        line = "20:15:30.123 IP 192.168.1.100.54321 > 8.8.8.8.53: 65432+ A? example.com. (30)"
+        assert parse_tcpdump_deauth_line(line) is None
+
+    def test_uppercase_bssid_lowercased(self):
+        line = (
+            "11:04:34.360700 314us BSSID:AA:BB:CC:DD:EE:FF "
+            "DA:11:22:33:44:55:66 SA:AA:BB:CC:DD:EE:FF "
+            "DeAuthentication: Unspecified"
+        )
+        result = parse_tcpdump_deauth_line(line)
+        assert result is not None
+        assert result.bssid == "aa:bb:cc:dd:ee:ff"
+        assert result.source == "aa:bb:cc:dd:ee:ff"
+        assert result.destination == "11:22:33:44:55:66"
+
+    def test_reason_with_reason_code_number(self):
+        """Handles tcpdump output that includes numeric reason codes."""
+        line = (
+            "14:00:00.000000 100us BSSID:00:14:6c:7e:40:80 "
+            "DA:00:0f:b5:46:11:19 SA:00:14:6c:7e:40:80 "
+            "DeAuthentication: Deauthenticated (7)"
+        )
+        result = parse_tcpdump_deauth_line(line)
+        assert result is not None
+        assert "7" in result.reason
 
 
 # ---------------------------------------------------------------------------

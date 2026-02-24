@@ -212,7 +212,7 @@ python3 -m pytest tests/ -v
 python3 -m pytest tests/ -v --cov=src/ --cov-report=term-missing
 ```
 
-434 tests cover parsing, signal helpers, security mapping, Rich table rendering, subprocess error handling, credentials file loading, network connection, DNS query capture, ARP client detection, connected network indicator, monitor mode helpers, platform detection, baseline I/O, rogue AP detection and alert display, scanner/renderer protocols, main() integration, input validation, CommandRunner injection, and edge cases.
+448 tests cover parsing, signal helpers, security mapping, Rich table rendering, subprocess error handling, credentials file loading, network connection, DNS query capture, deauth frame parsing, ARP client detection, connected network indicator, monitor mode helpers, platform detection, baseline I/O, rogue AP detection and alert display, scanner/renderer protocols, main() integration, input validation, CommandRunner injection, and edge cases.
 
 ## Security Hardening
 
@@ -258,7 +258,7 @@ If monitor mode shows "client counts enabled" but no networks or client counts a
 - **Display RF band for each BSSID** (3 pts) -- Display in output what RF band each BSSID is currently operating in. Add `FREQ` to the nmcli query, map frequency to band (2.4 GHz / 5 GHz / 6 GHz), add a `band` field to the `Network` dataclass, and render in a new table column.
 - **Detect number of clients on each BSSID** (3 pts) -- Per-BSSID client counts already work via `--monitor` on Atheros/Realtek USB adapters. Remaining work: improve UX around Intel WiFi limitation (clear in-TUI message when monitor mode yields zero clients), and add a combined mode that uses `--arp` for the connected BSSID and `--monitor` for others when a compatible adapter is present.
 - **Deauth attack detection** (8 pts) -- Detect deauthentication/disassociation frames targeting your own network and alert in the TUI. Uses tcpdump on the monitor interface with a BPF filter (no new dependencies — follows the existing `DnsTracker` pattern). Broken into 4 sub-stories:
-  - Story 1 (2 pts) -- Frame parser: `DeauthEvent` dataclass in `wifi_common.py` (`bssid`, `source`, `destination`, `reason_code`, `subtype`). `parse_tcpdump_deauth_line()` regex parser for tcpdump `-e` output on monitor interface (similar to `parse_tcpdump_dns_line()`). Pure function, 100% test coverage.
+  - ~~Story 1 (2 pts)~~ -- **Complete.** Frame parser: `DeauthEvent` dataclass in `wifi_common.py` (`bssid`, `source`, `destination`, `reason`, `subtype`). `parse_tcpdump_deauth_line()` regex parser for tcpdump `-e` output on monitor interface. Pure function, 14 tests, 100% coverage.
   - Story 2 (2 pts) -- Background capture: `DeauthTracker` class modeled on `DnsTracker`. Background thread reads tcpdump stdout filtered with `type mgt subtype deauth or type mgt subtype disassoc`. Thread-safe event recording with lock. `start(interface)` / `stop()` lifecycle, `events(n)` accessor. `CommandRunner` injection seam.
   - Story 3 (2 pts) -- Alert display + main() integration: `build_deauth_table()` red-themed Rich Table (BSSID, source, reason code, count, last seen). Wire into `main()` — activates automatically when `--monitor` is active. Append deauth table to `Group` alongside network/rogue/DNS tables.
   - Story 4 (2 pts) -- Rate-based alerting: Burst detection (>N deauth frames targeting one BSSID in T seconds = attack). Normal disconnect vs attack classification. Integration with `--baseline` (alert only for known BSSIDs). Visual severity levels (yellow suspicious, red confirmed attack).
