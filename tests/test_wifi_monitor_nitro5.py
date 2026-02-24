@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, mock_open, patch
 
 import pytest
 
-from wifimonitor.wifi_common import Network, KnownNetwork, ScannerProtocol, RendererProtocol
+from wifimonitor.wifi_common import Network, KnownNetwork, RogueAlert, ScannerProtocol, RendererProtocol
 from wifimonitor.wifi_monitor_nitro5 import (
     MIN_PYTHON,
     parse_nmcli_output,
@@ -32,6 +32,7 @@ from wifimonitor.wifi_monitor_nitro5 import (
     load_baseline,
     save_baseline,
     detect_rogue_aps,
+    build_rogue_table,
     parse_tcpdump_dns_line,
     DnsTracker,
     build_dns_table,
@@ -2079,6 +2080,57 @@ class TestDetectRogueAps:
 
 
 # ---------------------------------------------------------------------------
+# build_rogue_table — rogue AP alert rendering
+# ---------------------------------------------------------------------------
+
+class TestBuildRogueTable:
+    """build_rogue_table renders a Rich Table of rogue AP alerts."""
+
+    def _alert(self, reason: str = "unknown_bssid") -> RogueAlert:
+        return RogueAlert(
+            network=Network(bssid="ff:ff:ff:ff:ff:ff", ssid="HomeNet", channel=6, signal=-60),
+            reason=reason,
+            expected_bssids=["aa:bb:cc:dd:ee:01"],
+            expected_channels=[6],
+        )
+
+    def test_empty_alerts_returns_table_with_no_rows(self):
+        table = build_rogue_table([])
+        assert table.row_count == 0
+
+    def test_single_alert_renders_one_row(self):
+        table = build_rogue_table([self._alert()])
+        assert table.row_count == 1
+
+    def test_multiple_alerts_render_multiple_rows(self):
+        alerts = [self._alert(), self._alert("unexpected_channel")]
+        table = build_rogue_table(alerts)
+        assert table.row_count == 2
+
+    def test_title_contains_rogue(self):
+        table = build_rogue_table([self._alert()])
+        assert table.title is not None
+        assert "Rogue" in table.title or "rogue" in table.title.lower()
+
+    def test_ssid_is_escaped(self):
+        """Malicious SSIDs are escaped to prevent Rich markup injection."""
+        alert = RogueAlert(
+            network=Network(bssid="ff:ff:ff:ff:ff:ff", ssid="[red]Evil[/red]", channel=6, signal=-60),
+            reason="unknown_bssid",
+            expected_bssids=["aa:bb:cc:dd:ee:01"],
+            expected_channels=[6],
+        )
+        table = build_rogue_table([alert])
+        assert table.row_count == 1  # Did not crash from markup
+
+    def test_caption_shows_alert_count(self):
+        alerts = [self._alert(), self._alert()]
+        table = build_rogue_table(alerts)
+        assert table.caption is not None
+        assert "2" in table.caption
+
+
+# ---------------------------------------------------------------------------
 # main() — --list-devices integration
 # ---------------------------------------------------------------------------
 
@@ -3456,3 +3508,43 @@ class TestMain:
             mock_scanner.interface = "wlan0"
             mock_cls.return_value = mock_scanner
             main()
+
+    def test_main_baseline_loads_and_detects_rogue(self):
+        """main() with --baseline loads baseline and calls detect_rogue_aps each cycle."""
+        from wifimonitor.wifi_monitor_nitro5 import main
+        baseline = [KnownNetwork(ssid="HomeNet", bssid="aa:bb:cc:dd:ee:99", channel=6)]
+        with (
+            patch("wifimonitor.wifi_monitor_nitro5._parse_args",
+                  return_value=self._args(baseline="known.json")),
+            patch("wifimonitor.wifi_monitor_nitro5.list_wifi_interfaces", return_value=[]),
+            patch("wifimonitor.wifi_monitor_nitro5.Console"),
+            patch("wifimonitor.wifi_monitor_nitro5.Live"),
+            patch("wifimonitor.wifi_monitor_nitro5.load_baseline", return_value=baseline) as mock_load,
+            patch("wifimonitor.wifi_monitor_nitro5.scan_wifi_nmcli", return_value=self._nets()),
+            patch("wifimonitor.wifi_monitor_nitro5._get_connected_bssid", return_value=None),
+            patch("wifimonitor.wifi_monitor_nitro5.detect_rogue_aps") as mock_detect,
+            patch("wifimonitor.wifi_monitor_nitro5.time.sleep", side_effect=KeyboardInterrupt),
+            patch("wifimonitor.wifi_monitor_nitro5.sys.exit"),
+        ):
+            mock_detect.return_value = []
+            main()
+            mock_load.assert_called_once_with("known.json")
+            mock_detect.assert_called_once()
+
+    def test_main_baseline_none_skips_detection(self):
+        """main() without --baseline does not call detect_rogue_aps."""
+        from wifimonitor.wifi_monitor_nitro5 import main
+        with (
+            patch("wifimonitor.wifi_monitor_nitro5._parse_args",
+                  return_value=self._args()),
+            patch("wifimonitor.wifi_monitor_nitro5.list_wifi_interfaces", return_value=[]),
+            patch("wifimonitor.wifi_monitor_nitro5.Console"),
+            patch("wifimonitor.wifi_monitor_nitro5.Live"),
+            patch("wifimonitor.wifi_monitor_nitro5.scan_wifi_nmcli", return_value=self._nets()),
+            patch("wifimonitor.wifi_monitor_nitro5._get_connected_bssid", return_value=None),
+            patch("wifimonitor.wifi_monitor_nitro5.detect_rogue_aps") as mock_detect,
+            patch("wifimonitor.wifi_monitor_nitro5.time.sleep", side_effect=KeyboardInterrupt),
+            patch("wifimonitor.wifi_monitor_nitro5.sys.exit"),
+        ):
+            main()
+            mock_detect.assert_not_called()

@@ -1461,6 +1461,43 @@ def build_dns_table(domains: list[tuple[str, int]]) -> Table:
     return table
 
 
+def build_rogue_table(alerts: list[RogueAlert]) -> Table:
+    """Build a Rich Table showing rogue AP detection alerts.
+
+    Args:
+        alerts: List of :class:`RogueAlert` objects from :func:`detect_rogue_aps`.
+    """
+    table = Table(
+        title="Rogue AP Alerts",
+        title_style="bold red",
+        caption=f"{len(alerts)} alert(s)",
+        caption_style="grey50",
+        expand=True,
+        show_lines=False,
+        padding=(0, 1),
+    )
+    table.add_column("#", style="grey50", width=3, justify="right")
+    table.add_column("SSID", style="white", min_width=10, max_width=25)
+    table.add_column("BSSID", style="red", width=17)
+    table.add_column("Ch", justify="right", width=4)
+    table.add_column("Reason", style="yellow", min_width=10, max_width=20)
+    table.add_column("Expected BSSIDs", style="grey50", min_width=15, max_width=40)
+
+    for i, alert in enumerate(alerts, 1):
+        reason_display = alert.reason.replace("_", " ")
+        expected = ", ".join(b.upper() for b in alert.expected_bssids)
+        table.add_row(
+            str(i),
+            escape(alert.network.ssid),
+            escape(alert.network.bssid.upper()),
+            str(alert.network.channel),
+            reason_display,
+            expected,
+        )
+
+    return table
+
+
 # ---------------------------------------------------------------------------
 # Protocol adapters (ScannerProtocol / RendererProtocol)
 # ---------------------------------------------------------------------------
@@ -1700,6 +1737,20 @@ def main() -> None:
     arp_scanner: ArpScanner | None = None
     nmcli_scanner = NmcliScanner(interface=args.interface)
     renderer = RichNetworkRenderer()
+    baseline: list[KnownNetwork] = []
+
+    if args.baseline:
+        baseline = load_baseline(args.baseline)
+        if baseline:
+            console.print(
+                f"[bold cyan]WiFi Monitor[/bold cyan] — "
+                f"loaded {len(baseline)} known network(s) from {args.baseline}"
+            )
+        else:
+            console.print(
+                "[bold cyan]WiFi Monitor[/bold cyan] — "
+                f"[yellow]no known networks loaded from {args.baseline}[/yellow]"
+            )
 
     if args.arp:
         arp_scanner = ArpScanner(interface=args.interface)
@@ -1823,11 +1874,17 @@ def main() -> None:
                     connected_bssid=connected_bssid,
                 )
 
+                tables: list[Table] = [network_table]
+
+                if baseline:
+                    rogue_alerts = detect_rogue_aps(networks, baseline)
+                    if rogue_alerts:
+                        tables.append(build_rogue_table(rogue_alerts))
+
                 if dns_tracker is not None:
-                    dns_table = build_dns_table(dns_tracker.top())
-                    live.update(Group(network_table, dns_table))
-                else:
-                    live.update(network_table)
+                    tables.append(build_dns_table(dns_tracker.top()))
+
+                live.update(Group(*tables) if len(tables) > 1 else tables[0])
 
                 # Auto-connect on first scan if requested
                 # When monitor mode is active, the scan interface is in monitor mode

@@ -14,6 +14,7 @@ Currently runs on **Linux laptops** using `nmcli` (NetworkManager). Raspberry Pi
 - **ARP client detection** -- Count active devices on your connected network via ARP scanning (`--arp`). Works on all WiFi adapters including Intel built-in. Requires root.
 - **Credentials file** -- Load SSID/passphrase pairs from a CSV file to identify known networks and optionally auto-connect.
 - **DNS query capture** -- Live capture and display of DNS queries in a ranked "top" style table (requires root / tcpdump).
+- **Rogue AP detection** -- Compare scan results against a known-good baseline to detect unknown BSSIDs or unexpected channel changes (`--baseline`). Save baselines with `--save-baseline`.
 - **Rich TUI** -- Clean terminal interface using the [Rich](https://github.com/Textualize/rich) library.
 
 ## Requirements
@@ -211,7 +212,7 @@ python3 -m pytest tests/ -v
 python3 -m pytest tests/ -v --cov=src/ --cov-report=term-missing
 ```
 
-426 tests cover parsing, signal helpers, security mapping, Rich table rendering, subprocess error handling, credentials file loading, network connection, DNS query capture, ARP client detection, connected network indicator, monitor mode helpers, platform detection, baseline I/O, rogue AP detection, scanner/renderer protocols, main() integration, input validation, CommandRunner injection, and edge cases.
+434 tests cover parsing, signal helpers, security mapping, Rich table rendering, subprocess error handling, credentials file loading, network connection, DNS query capture, ARP client detection, connected network indicator, monitor mode helpers, platform detection, baseline I/O, rogue AP detection and alert display, scanner/renderer protocols, main() integration, input validation, CommandRunner injection, and edge cases.
 
 ## Security Hardening
 
@@ -257,10 +258,10 @@ If monitor mode shows "client counts enabled" but no networks or client counts a
 - **Display RF band for each BSSID** (3 pts) -- Display in output what RF band each BSSID is currently operating in. Add `FREQ` to the nmcli query, map frequency to band (2.4 GHz / 5 GHz / 6 GHz), add a `band` field to the `Network` dataclass, and render in a new table column.
 - **Detect number of clients on each BSSID** (3 pts) -- Per-BSSID client counts already work via `--monitor` on Atheros/Realtek USB adapters. Remaining work: improve UX around Intel WiFi limitation (clear in-TUI message when monitor mode yields zero clients), and add a combined mode that uses `--arp` for the connected BSSID and `--monitor` for others when a compatible adapter is present.
 - **Deauth attack detection** (8 pts) -- Detect deauthentication/disassociation frames targeting your own network and alert in the TUI. Requires monitor mode capture and 802.11 management frame parsing.
-- **Rogue AP detection** (5 pts) -- Identify rogue access points by comparing scan results against a known-good baseline. Broken into 3 sub-stories:
+- ~~**Rogue AP detection** (5 pts)~~ -- **Complete.** Identify rogue access points by comparing scan results against a known-good baseline. Broken into 3 sub-stories:
   - ~~Story 1 (2 pts)~~ -- **Complete.** Known-good baseline file: `KnownNetwork` dataclass, `load_baseline()` / `save_baseline()` JSON I/O, `--baseline` and `--save-baseline` CLI flags.
   - ~~Story 2 (2 pts)~~ -- **Complete.** Detection logic: `detect_rogue_aps()` compares scan results against baseline, flags networks with known SSID but unknown BSSID (`unknown_bssid`) or unexpected channel (`unexpected_channel`). `RogueAlert` dataclass, case-insensitive BSSID matching, channel=0 wildcard support.
-  - Story 3 (1 pt) -- Alert display: render rogue alerts in TUI (color-coded rows or separate alert table), wire into `main()` scan loop.
+  - ~~Story 3 (1 pt)~~ -- **Complete.** Alert display: `build_rogue_table()` renders a red-themed Rich Table of rogue alerts. Wired into `main()` scan loop — when `--baseline` is specified, loads baseline at startup and runs `detect_rogue_aps()` each cycle, showing alerts below the network table.
 - **Unusual client behavior monitoring** (13 pts) -- Monitor for anomalous client activity on networks you own (e.g. rapid association/disassociation, probe floods). Requires monitor mode and rate-based anomaly heuristics.
 - **Raspberry Pi support** (8 pts) -- Monitor mode scanning via airodump-ng with PiTFT display output. The CSV parser (`parse_airodump_csv`) and shared data structures are already implemented.
 
