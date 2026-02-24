@@ -46,7 +46,8 @@ from rich.markup import escape
 from rich.table import Table
 
 from wifimonitor.wifi_common import (
-    Network, KnownNetwork, RogueAlert, DeauthEvent, parse_airodump_csv,
+    Network, KnownNetwork, RogueAlert, DeauthEvent, DeauthSummary,
+    parse_airodump_csv,
     signal_to_bars, signal_color, security_color,
     COLOR_TO_RICH,
     CommandRunner, SubprocessRunner,
@@ -463,6 +464,77 @@ class DeauthTracker:
                     self.record(event)
         except (ValueError, OSError):
             pass  # Process was terminated
+
+
+# ---------------------------------------------------------------------------
+# Deauth rate-based severity classification
+# ---------------------------------------------------------------------------
+
+_BROADCAST = "ff:ff:ff:ff:ff:ff"
+
+
+def classify_deauth_events(
+    events: list[DeauthEvent],
+    baseline: list[KnownNetwork] | None = None,
+) -> list[DeauthSummary]:
+    """Aggregate deauth/disassoc events by BSSID and classify severity.
+
+    Severity thresholds (frame count per BSSID):
+        - **normal**: 1-2 frames (routine roaming/AP restart)
+        - **suspicious**: 3-9 frames (may indicate targeted disruption)
+        - **attack**: 10+ frames (likely active deauth attack)
+
+    Args:
+        events: Raw deauth/disassoc events from :class:`DeauthTracker`.
+        baseline: Optional known-good network list.  When provided, only
+            BSSIDs found in the baseline are included in the output.  This
+            focuses alerts on networks you care about.
+
+    Returns:
+        A list of :class:`DeauthSummary` objects sorted by ``total_count``
+        descending (highest activity first).
+    """
+    if not events:
+        return []
+
+    # Optional: restrict to known BSSIDs
+    known_bssids: set[str] | None = None
+    if baseline:
+        known_bssids = {kn.bssid.lower() for kn in baseline}
+
+    # Aggregate by BSSID
+    by_bssid: dict[str, list[DeauthEvent]] = {}
+    for evt in events:
+        bssid = evt.bssid.lower()
+        if known_bssids is not None and bssid not in known_bssids:
+            continue
+        by_bssid.setdefault(bssid, []).append(evt)
+
+    summaries: list[DeauthSummary] = []
+    for bssid, bssid_events in by_bssid.items():
+        total = len(bssid_events)
+        broadcast = sum(1 for e in bssid_events if e.destination == _BROADCAST)
+        targets = {
+            e.destination for e in bssid_events if e.destination != _BROADCAST
+        }
+
+        if total >= 10:
+            severity = "attack"
+        elif total >= 3:
+            severity = "suspicious"
+        else:
+            severity = "normal"
+
+        summaries.append(DeauthSummary(
+            bssid=bssid,
+            total_count=total,
+            broadcast_count=broadcast,
+            unique_targets=len(targets),
+            severity=severity,
+        ))
+
+    summaries.sort(key=lambda s: s.total_count, reverse=True)
+    return summaries
 
 
 # ---------------------------------------------------------------------------
@@ -1653,6 +1725,55 @@ def build_deauth_table(events: list[DeauthEvent]) -> Table:
     return table
 
 
+def build_deauth_summary_table(summaries: list[DeauthSummary]) -> Table:
+    """Build a Rich Table showing severity-classified deauth summaries.
+
+    Rows are color-coded by severity:
+        - **normal** — default style
+        - **suspicious** — yellow
+        - **attack** — bold red
+
+    Args:
+        summaries: Aggregated summaries from :func:`classify_deauth_events`.
+    """
+    _SEVERITY_STYLE: dict[str, str] = {
+        "normal": "",
+        "suspicious": "yellow",
+        "attack": "bold red",
+    }
+
+    table = Table(
+        title="Deauth/Disassoc Summary",
+        title_style="bold red",
+        caption=f"{len(summaries)} BSSID(s)",
+        caption_style="grey50",
+        expand=True,
+        show_lines=False,
+        padding=(0, 1),
+    )
+    table.add_column("#", style="grey50", width=3, justify="right")
+    table.add_column("BSSID", width=17)
+    table.add_column("Frames", justify="right", width=7)
+    table.add_column("Broadcast", justify="right", width=10)
+    table.add_column("Targets", justify="right", width=8)
+    table.add_column("Severity", width=12)
+
+    for i, s in enumerate(summaries, 1):
+        row_style = _SEVERITY_STYLE.get(s.severity, "")
+        sev_label = s.severity.upper()
+        table.add_row(
+            str(i),
+            escape(s.bssid.upper()),
+            str(s.total_count),
+            str(s.broadcast_count),
+            str(s.unique_targets),
+            sev_label,
+            style=row_style,
+        )
+
+    return table
+
+
 # ---------------------------------------------------------------------------
 # Protocol adapters (ScannerProtocol / RendererProtocol)
 # ---------------------------------------------------------------------------
@@ -2053,6 +2174,12 @@ def main() -> None:
                     deauth_events = deauth_tracker.events()
                     if deauth_events:
                         tables.append(build_deauth_table(deauth_events))
+                        summaries = classify_deauth_events(
+                            deauth_events,
+                            baseline=baseline or None,
+                        )
+                        if summaries:
+                            tables.append(build_deauth_summary_table(summaries))
 
                 if dns_tracker is not None:
                     tables.append(build_dns_table(dns_tracker.top()))

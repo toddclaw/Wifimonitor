@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, mock_open, patch
 
 import pytest
 
-from wifimonitor.wifi_common import Network, KnownNetwork, RogueAlert, DeauthEvent, ScannerProtocol, RendererProtocol
+from wifimonitor.wifi_common import Network, KnownNetwork, RogueAlert, DeauthEvent, DeauthSummary, ScannerProtocol, RendererProtocol
 from wifimonitor.wifi_monitor_nitro5 import (
     MIN_PYTHON,
     parse_nmcli_output,
@@ -35,6 +35,8 @@ from wifimonitor.wifi_monitor_nitro5 import (
     build_rogue_table,
     parse_tcpdump_deauth_line,
     build_deauth_table,
+    classify_deauth_events,
+    build_deauth_summary_table,
     parse_tcpdump_dns_line,
     DeauthTracker,
     DnsTracker,
@@ -1152,6 +1154,209 @@ class TestBuildDeauthTable:
             subtype="deauth",
         )
         table = build_deauth_table([evt])
+        assert table.row_count == 1
+
+
+# ---------------------------------------------------------------------------
+# classify_deauth_events — rate-based severity classification
+# ---------------------------------------------------------------------------
+
+class TestClassifyDeauthEvents:
+    """classify_deauth_events aggregates events by BSSID and classifies severity."""
+
+    def _event(
+        self,
+        bssid: str = "aa:bb:cc:dd:ee:01",
+        destination: str = "ff:ff:ff:ff:ff:ff",
+        source: str = "aa:bb:cc:dd:ee:01",
+        reason: str = "Unspecified",
+        subtype: str = "deauth",
+    ) -> DeauthEvent:
+        return DeauthEvent(
+            bssid=bssid, source=source, destination=destination,
+            reason=reason, subtype=subtype,
+        )
+
+    def test_empty_events_returns_empty_list(self):
+        assert classify_deauth_events([]) == []
+
+    def test_single_event_normal_severity(self):
+        """1 frame → severity 'normal'."""
+        summaries = classify_deauth_events([self._event()])
+        assert len(summaries) == 1
+        assert summaries[0].bssid == "aa:bb:cc:dd:ee:01"
+        assert summaries[0].total_count == 1
+        assert summaries[0].severity == "normal"
+
+    def test_two_events_normal_severity(self):
+        """1-2 frames → severity 'normal'."""
+        events = [self._event(), self._event()]
+        summaries = classify_deauth_events(events)
+        assert summaries[0].total_count == 2
+        assert summaries[0].severity == "normal"
+
+    def test_three_events_suspicious_severity(self):
+        """3-9 frames → severity 'suspicious'."""
+        events = [self._event() for _ in range(3)]
+        summaries = classify_deauth_events(events)
+        assert summaries[0].severity == "suspicious"
+
+    def test_nine_events_suspicious_severity(self):
+        """9 frames → still 'suspicious'."""
+        events = [self._event() for _ in range(9)]
+        summaries = classify_deauth_events(events)
+        assert summaries[0].severity == "suspicious"
+
+    def test_ten_events_attack_severity(self):
+        """10+ frames → severity 'attack'."""
+        events = [self._event() for _ in range(10)]
+        summaries = classify_deauth_events(events)
+        assert summaries[0].severity == "attack"
+
+    def test_groups_by_bssid(self):
+        """Events for different BSSIDs produce separate summaries."""
+        events = [
+            self._event(bssid="aa:bb:cc:dd:ee:01"),
+            self._event(bssid="aa:bb:cc:dd:ee:02"),
+            self._event(bssid="aa:bb:cc:dd:ee:01"),
+        ]
+        summaries = classify_deauth_events(events)
+        assert len(summaries) == 2
+        bssids = {s.bssid for s in summaries}
+        assert bssids == {"aa:bb:cc:dd:ee:01", "aa:bb:cc:dd:ee:02"}
+
+    def test_sorted_by_total_count_descending(self):
+        """Summaries are sorted by total_count descending."""
+        events = [
+            self._event(bssid="aa:bb:cc:dd:ee:01"),
+            self._event(bssid="aa:bb:cc:dd:ee:02"),
+            self._event(bssid="aa:bb:cc:dd:ee:02"),
+            self._event(bssid="aa:bb:cc:dd:ee:02"),
+        ]
+        summaries = classify_deauth_events(events)
+        assert summaries[0].bssid == "aa:bb:cc:dd:ee:02"
+        assert summaries[0].total_count == 3
+
+    def test_broadcast_count(self):
+        """broadcast_count counts DA = ff:ff:ff:ff:ff:ff."""
+        events = [
+            self._event(destination="ff:ff:ff:ff:ff:ff"),
+            self._event(destination="11:22:33:44:55:66"),
+            self._event(destination="ff:ff:ff:ff:ff:ff"),
+        ]
+        summaries = classify_deauth_events(events)
+        assert summaries[0].broadcast_count == 2
+
+    def test_unique_targets_excludes_broadcast(self):
+        """unique_targets counts distinct non-broadcast DAs."""
+        events = [
+            self._event(destination="ff:ff:ff:ff:ff:ff"),
+            self._event(destination="11:22:33:44:55:66"),
+            self._event(destination="11:22:33:44:55:66"),
+            self._event(destination="aa:bb:cc:dd:ee:ff"),
+        ]
+        summaries = classify_deauth_events(events)
+        assert summaries[0].unique_targets == 2
+
+    def test_baseline_filters_to_known_bssids(self):
+        """When baseline provided, only BSSIDs in baseline appear."""
+        baseline = [
+            KnownNetwork(ssid="Home", bssid="aa:bb:cc:dd:ee:01", channel=6),
+        ]
+        events = [
+            self._event(bssid="aa:bb:cc:dd:ee:01"),
+            self._event(bssid="xx:yy:zz:00:11:22"),
+        ]
+        summaries = classify_deauth_events(events, baseline=baseline)
+        assert len(summaries) == 1
+        assert summaries[0].bssid == "aa:bb:cc:dd:ee:01"
+
+    def test_baseline_none_includes_all_bssids(self):
+        """Without baseline, all BSSIDs are included."""
+        events = [
+            self._event(bssid="aa:bb:cc:dd:ee:01"),
+            self._event(bssid="xx:yy:zz:00:11:22"),
+        ]
+        summaries = classify_deauth_events(events, baseline=None)
+        assert len(summaries) == 2
+
+    def test_baseline_empty_list_includes_all(self):
+        """Empty baseline list behaves the same as None."""
+        events = [self._event()]
+        summaries = classify_deauth_events(events, baseline=[])
+        assert len(summaries) == 1
+
+    def test_mixed_severity_multiple_bssids(self):
+        """Different BSSIDs can have different severities."""
+        events = (
+            [self._event(bssid="aa:bb:cc:dd:ee:01")]
+            + [self._event(bssid="aa:bb:cc:dd:ee:02") for _ in range(10)]
+        )
+        summaries = classify_deauth_events(events)
+        by_bssid = {s.bssid: s for s in summaries}
+        assert by_bssid["aa:bb:cc:dd:ee:01"].severity == "normal"
+        assert by_bssid["aa:bb:cc:dd:ee:02"].severity == "attack"
+
+
+# ---------------------------------------------------------------------------
+# build_deauth_summary_table — severity-colored summary table
+# ---------------------------------------------------------------------------
+
+class TestBuildDeauthSummaryTable:
+    """build_deauth_summary_table renders a Rich Table from DeauthSummary objects."""
+
+    def _summary(
+        self,
+        bssid: str = "aa:bb:cc:dd:ee:01",
+        total_count: int = 1,
+        broadcast_count: int = 0,
+        unique_targets: int = 0,
+        severity: str = "normal",
+    ) -> DeauthSummary:
+        return DeauthSummary(
+            bssid=bssid, total_count=total_count,
+            broadcast_count=broadcast_count, unique_targets=unique_targets,
+            severity=severity,
+        )
+
+    def test_empty_summaries_returns_table_with_no_rows(self):
+        table = build_deauth_summary_table([])
+        assert table.row_count == 0
+
+    def test_single_summary_renders_one_row(self):
+        table = build_deauth_summary_table([self._summary()])
+        assert table.row_count == 1
+
+    def test_multiple_summaries_render_multiple_rows(self):
+        summaries = [self._summary(), self._summary(bssid="bb:cc:dd:ee:ff:00")]
+        table = build_deauth_summary_table(summaries)
+        assert table.row_count == 2
+
+    def test_title_contains_deauth(self):
+        table = build_deauth_summary_table([self._summary()])
+        assert table.title is not None
+        assert "deauth" in table.title.lower() or "Deauth" in table.title
+
+    def test_caption_shows_count(self):
+        summaries = [self._summary(), self._summary(bssid="bb:cc:dd:ee:ff:00")]
+        table = build_deauth_summary_table(summaries)
+        assert table.caption is not None
+        assert "2" in table.caption
+
+    def test_bssid_is_escaped(self):
+        """Malicious BSSIDs are escaped to prevent Rich markup injection."""
+        summary = self._summary(bssid="[red]evil[/red]")
+        table = build_deauth_summary_table([summary])
+        assert table.row_count == 1  # Did not crash
+
+    def test_attack_severity_renders(self):
+        """An 'attack' severity summary renders without error."""
+        table = build_deauth_summary_table([self._summary(severity="attack", total_count=15)])
+        assert table.row_count == 1
+
+    def test_suspicious_severity_renders(self):
+        """A 'suspicious' severity summary renders without error."""
+        table = build_deauth_summary_table([self._summary(severity="suspicious", total_count=5)])
         assert table.row_count == 1
 
 

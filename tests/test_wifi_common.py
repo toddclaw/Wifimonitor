@@ -8,6 +8,7 @@ from wifimonitor.wifi_common import (
     Network,
     KnownNetwork,
     DeauthEvent,
+    DeauthSummary,
     signal_to_bars,
     signal_color,
     security_color,
@@ -93,6 +94,33 @@ class TestDeauthEvent:
             subtype="disassoc",
         )
         assert evt.subtype == "disassoc"
+
+
+class TestDeauthSummary:
+    def test_defaults(self):
+        s = DeauthSummary(
+            bssid="aa:bb:cc:dd:ee:01",
+            total_count=5,
+            broadcast_count=2,
+            unique_targets=3,
+            severity="suspicious",
+        )
+        assert s.bssid == "aa:bb:cc:dd:ee:01"
+        assert s.total_count == 5
+        assert s.broadcast_count == 2
+        assert s.unique_targets == 3
+        assert s.severity == "suspicious"
+
+    def test_severity_values(self):
+        for sev in ("normal", "suspicious", "attack"):
+            s = DeauthSummary(
+                bssid="00:11:22:33:44:55",
+                total_count=1,
+                broadcast_count=0,
+                unique_targets=0,
+                severity=sev,
+            )
+            assert s.severity == sev
 
 
 # ---------------------------------------------------------------------------
