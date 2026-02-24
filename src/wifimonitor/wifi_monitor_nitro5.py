@@ -1618,6 +1618,41 @@ def build_rogue_table(alerts: list[RogueAlert]) -> Table:
     return table
 
 
+def build_deauth_table(events: list[DeauthEvent]) -> Table:
+    """Build a Rich Table showing captured deauth/disassoc events.
+
+    Args:
+        events: List of :class:`DeauthEvent` objects, newest first.
+    """
+    table = Table(
+        title="Deauth/Disassoc Frames",
+        title_style="bold red",
+        caption=f"{len(events)} event(s)",
+        caption_style="grey50",
+        expand=True,
+        show_lines=False,
+        padding=(0, 1),
+    )
+    table.add_column("#", style="grey50", width=3, justify="right")
+    table.add_column("BSSID", style="red", width=17)
+    table.add_column("Source", style="yellow", width=17)
+    table.add_column("Destination", style="white", width=17)
+    table.add_column("Type", style="cyan", width=8)
+    table.add_column("Reason", style="grey50", min_width=10, max_width=40)
+
+    for i, evt in enumerate(events, 1):
+        table.add_row(
+            str(i),
+            escape(evt.bssid.upper()),
+            escape(evt.source.upper()),
+            escape(evt.destination.upper()),
+            evt.subtype,
+            escape(evt.reason),
+        )
+
+    return table
+
+
 # ---------------------------------------------------------------------------
 # Protocol adapters (ScannerProtocol / RendererProtocol)
 # ---------------------------------------------------------------------------
@@ -1852,6 +1887,7 @@ def main() -> None:
     credentials: dict[str, str] | None = None
     connected = False
     dns_tracker: DnsTracker | None = None
+    deauth_tracker: DeauthTracker | None = None
     airodump_scanner: AirodumpScanner | None = None
     airodump_failure_reason: str | None = None
     arp_scanner: ArpScanner | None = None
@@ -1891,6 +1927,18 @@ def main() -> None:
                 f"[bold cyan]WiFi Monitor[/bold cyan] — "
                 f"[green]monitor mode on {monitor_interface}, client counts enabled[/green]"
             )
+            # Start deauth frame capture on the monitor interface
+            deauth_iface = getattr(
+                airodump_scanner, "_monitor_interface", monitor_interface
+            )
+            deauth_tracker = DeauthTracker()
+            if deauth_tracker.start(interface=deauth_iface):
+                console.print(
+                    "[bold cyan]WiFi Monitor[/bold cyan] — "
+                    "[green]deauth frame capture started[/green]"
+                )
+            else:
+                deauth_tracker = None
         else:
             if failure_reason == "monitor_unsupported":
                 msg = "interface does not support monitor mode — try a USB WiFi adapter"
@@ -2001,6 +2049,11 @@ def main() -> None:
                     if rogue_alerts:
                         tables.append(build_rogue_table(rogue_alerts))
 
+                if deauth_tracker is not None:
+                    deauth_events = deauth_tracker.events()
+                    if deauth_events:
+                        tables.append(build_deauth_table(deauth_events))
+
                 if dns_tracker is not None:
                     tables.append(build_dns_table(dns_tracker.top()))
 
@@ -2024,6 +2077,8 @@ def main() -> None:
 
                 time.sleep(SCAN_INTERVAL)
     except KeyboardInterrupt:
+        if deauth_tracker is not None:
+            deauth_tracker.stop()
         if dns_tracker is not None:
             dns_tracker.stop()
         if airodump_scanner is not None:

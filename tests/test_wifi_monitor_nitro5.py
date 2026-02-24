@@ -34,6 +34,7 @@ from wifimonitor.wifi_monitor_nitro5 import (
     detect_rogue_aps,
     build_rogue_table,
     parse_tcpdump_deauth_line,
+    build_deauth_table,
     parse_tcpdump_dns_line,
     DeauthTracker,
     DnsTracker,
@@ -1082,6 +1083,76 @@ class TestDeauthTracker:
         assert len(result) == 1
         assert result[0].bssid == "00:14:6c:7e:40:80"
         assert result[0].subtype == "deauth"
+
+
+# ---------------------------------------------------------------------------
+# build_deauth_table — deauth alert rendering
+# ---------------------------------------------------------------------------
+
+class TestBuildDeauthTable:
+    """build_deauth_table renders a Rich Table of deauth/disassoc events."""
+
+    def _event(self, bssid: str = "aa:bb:cc:dd:ee:01", subtype: str = "deauth") -> DeauthEvent:
+        return DeauthEvent(
+            bssid=bssid,
+            source=bssid,
+            destination="ff:ff:ff:ff:ff:ff",
+            reason="Unspecified",
+            subtype=subtype,
+        )
+
+    def test_empty_events_returns_table_with_no_rows(self):
+        table = build_deauth_table([])
+        assert table.row_count == 0
+
+    def test_single_event_renders_one_row(self):
+        table = build_deauth_table([self._event()])
+        assert table.row_count == 1
+
+    def test_multiple_events_render_multiple_rows(self):
+        events = [self._event(), self._event("bb:cc:dd:ee:ff:00", "disassoc")]
+        table = build_deauth_table(events)
+        assert table.row_count == 2
+
+    def test_title_contains_deauth(self):
+        table = build_deauth_table([self._event()])
+        assert table.title is not None
+        assert "Deauth" in table.title or "deauth" in table.title.lower()
+
+    def test_bssid_is_escaped(self):
+        """Malicious BSSIDs are escaped to prevent Rich markup injection."""
+        evt = DeauthEvent(
+            bssid="[red]evil[/red]",
+            source="[red]evil[/red]",
+            destination="ff:ff:ff:ff:ff:ff",
+            reason="test",
+            subtype="deauth",
+        )
+        table = build_deauth_table([evt])
+        assert table.row_count == 1  # Did not crash from markup
+
+    def test_caption_shows_event_count(self):
+        events = [self._event(), self._event()]
+        table = build_deauth_table(events)
+        assert table.caption is not None
+        assert "2" in table.caption
+
+    def test_disassoc_subtype_displayed(self):
+        """Disassoc events show 'disassoc' as subtype."""
+        table = build_deauth_table([self._event(subtype="disassoc")])
+        assert table.row_count == 1
+
+    def test_reason_text_included(self):
+        """The reason text from the event is rendered in the table."""
+        evt = DeauthEvent(
+            bssid="aa:bb:cc:dd:ee:01",
+            source="aa:bb:cc:dd:ee:01",
+            destination="11:22:33:44:55:66",
+            reason="Class 3 frame received",
+            subtype="deauth",
+        )
+        table = build_deauth_table([evt])
+        assert table.row_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -3786,3 +3857,56 @@ class TestMain:
         ):
             main()
             mock_detect.assert_not_called()
+
+    def test_main_monitor_starts_deauth_tracker(self):
+        """main() with --monitor starts DeauthTracker on the monitor interface."""
+        from wifimonitor.wifi_monitor_nitro5 import main
+        with (
+            patch("wifimonitor.wifi_monitor_nitro5._parse_args",
+                  return_value=self._args(monitor=True)),
+            patch("wifimonitor.wifi_monitor_nitro5.list_wifi_interfaces", return_value=[]),
+            patch("wifimonitor.wifi_monitor_nitro5.Console"),
+            patch("wifimonitor.wifi_monitor_nitro5.Live"),
+            patch("wifimonitor.wifi_monitor_nitro5.AirodumpScanner") as mock_cls,
+            patch("wifimonitor.wifi_monitor_nitro5.scan_wifi_nmcli", return_value=self._nets()),
+            patch("wifimonitor.wifi_monitor_nitro5._get_connected_bssid", return_value=None),
+            patch("wifimonitor.wifi_monitor_nitro5.DeauthTracker") as mock_deauth_cls,
+            patch("wifimonitor.wifi_monitor_nitro5.atexit.register"),
+            patch("wifimonitor.wifi_monitor_nitro5.time.sleep", side_effect=KeyboardInterrupt),
+            patch("wifimonitor.wifi_monitor_nitro5.sys.exit"),
+        ):
+            mock_scanner = MagicMock()
+            mock_scanner.start.return_value = (True, None)
+            mock_scanner.scan.return_value = self._nets()
+            mock_scanner.log_exit_if_dead.return_value = True
+            mock_scanner.interface = "wlan0"
+            mock_scanner._monitor_interface = "mon0"
+            mock_cls.return_value = mock_scanner
+            mock_deauth = MagicMock()
+            mock_deauth.start.return_value = True
+            mock_deauth.events.return_value = []
+            mock_deauth_cls.return_value = mock_deauth
+            main()
+            mock_deauth.start.assert_called_once()
+
+    def test_main_monitor_fail_skips_deauth_tracker(self):
+        """main() skips DeauthTracker when monitor mode fails to start."""
+        from wifimonitor.wifi_monitor_nitro5 import main
+        with (
+            patch("wifimonitor.wifi_monitor_nitro5._parse_args",
+                  return_value=self._args(monitor=True)),
+            patch("wifimonitor.wifi_monitor_nitro5.list_wifi_interfaces", return_value=[]),
+            patch("wifimonitor.wifi_monitor_nitro5.Console"),
+            patch("wifimonitor.wifi_monitor_nitro5.Live"),
+            patch("wifimonitor.wifi_monitor_nitro5.AirodumpScanner") as mock_cls,
+            patch("wifimonitor.wifi_monitor_nitro5.scan_wifi_nmcli", return_value=self._nets()),
+            patch("wifimonitor.wifi_monitor_nitro5._get_connected_bssid", return_value=None),
+            patch("wifimonitor.wifi_monitor_nitro5.DeauthTracker") as mock_deauth_cls,
+            patch("wifimonitor.wifi_monitor_nitro5.time.sleep", side_effect=KeyboardInterrupt),
+            patch("wifimonitor.wifi_monitor_nitro5.sys.exit"),
+        ):
+            mock_scanner = MagicMock()
+            mock_scanner.start.return_value = (False, "monitor_unsupported")
+            mock_cls.return_value = mock_scanner
+            main()
+            mock_deauth_cls.return_value.start.assert_not_called()
