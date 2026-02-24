@@ -35,6 +35,7 @@ from wifimonitor.wifi_monitor_nitro5 import (
     build_rogue_table,
     parse_tcpdump_deauth_line,
     parse_tcpdump_dns_line,
+    DeauthTracker,
     DnsTracker,
     build_dns_table,
     _parse_args,
@@ -943,6 +944,144 @@ class TestParseTcpdumpDeauthLine:
         result = parse_tcpdump_deauth_line(line)
         assert result is not None
         assert "7" in result.reason
+
+
+# ---------------------------------------------------------------------------
+# DeauthTracker — thread-safe deauth/disassoc frame tracker
+# ---------------------------------------------------------------------------
+
+class TestDeauthTracker:
+    """DeauthTracker captures deauth/disassoc frames via tcpdump in a background thread."""
+
+    def _make_event(self, bssid: str = "aa:bb:cc:dd:ee:01") -> DeauthEvent:
+        return DeauthEvent(
+            bssid=bssid,
+            source=bssid,
+            destination="ff:ff:ff:ff:ff:ff",
+            reason="Unspecified",
+            subtype="deauth",
+        )
+
+    def test_record_stores_event(self):
+        tracker = DeauthTracker()
+        evt = self._make_event()
+        tracker.record(evt)
+        result = tracker.events()
+        assert len(result) == 1
+        assert result[0].bssid == "aa:bb:cc:dd:ee:01"
+
+    def test_events_returns_most_recent_n(self):
+        tracker = DeauthTracker()
+        for i in range(20):
+            tracker.record(self._make_event(f"aa:bb:cc:dd:ee:{i:02d}"))
+        result = tracker.events(5)
+        assert len(result) == 5
+        # Most recent events first
+        assert result[0].bssid == "aa:bb:cc:dd:ee:19"
+
+    def test_events_empty_tracker_returns_empty(self):
+        tracker = DeauthTracker()
+        assert tracker.events() == []
+
+    def test_events_default_limit(self):
+        tracker = DeauthTracker()
+        for i in range(30):
+            tracker.record(self._make_event())
+        result = tracker.events()  # default n=20
+        assert len(result) == 20
+
+    def test_start_returns_true_when_tcpdump_available(self):
+        fake = _FakeRunner()
+        mock_proc = MagicMock()
+        mock_proc.stdout = iter([])
+        fake.set_popen_result(mock_proc)
+        tracker = DeauthTracker(runner=fake)
+        assert tracker.start(interface="mon0") is True
+        assert len(fake.popen_calls) == 1
+        cmd, _ = fake.popen_calls[0]
+        assert "tcpdump" in cmd
+        tracker.stop()
+
+    def test_start_returns_false_when_tcpdump_not_found(self):
+        fake = _FakeRunner()
+        fake.set_popen_side_effect(FileNotFoundError("tcpdump not found"))
+        tracker = DeauthTracker(runner=fake)
+        assert tracker.start(interface="mon0") is False
+
+    def test_start_includes_interface_in_command(self):
+        fake = _FakeRunner()
+        mock_proc = MagicMock()
+        mock_proc.stdout = iter([])
+        fake.set_popen_result(mock_proc)
+        tracker = DeauthTracker(runner=fake)
+        tracker.start(interface="mon0")
+        cmd, _ = fake.popen_calls[0]
+        assert "-i" in cmd
+        assert "mon0" in cmd
+        tracker.stop()
+
+    def test_start_uses_deauth_bpf_filter(self):
+        fake = _FakeRunner()
+        mock_proc = MagicMock()
+        mock_proc.stdout = iter([])
+        fake.set_popen_result(mock_proc)
+        tracker = DeauthTracker(runner=fake)
+        tracker.start(interface="mon0")
+        cmd, _ = fake.popen_calls[0]
+        cmd_str = " ".join(cmd)
+        assert "deauth" in cmd_str
+        assert "disassoc" in cmd_str
+        tracker.stop()
+
+    def test_start_uses_minimal_env(self):
+        fake = _FakeRunner()
+        mock_proc = MagicMock()
+        mock_proc.stdout = iter([])
+        fake.set_popen_result(mock_proc)
+        tracker = DeauthTracker(runner=fake)
+        tracker.start(interface="mon0")
+        _, kwargs = fake.popen_calls[0]
+        env = kwargs.get("env", {})
+        assert "LC_ALL" in env
+        assert len(env) <= 4
+        tracker.stop()
+
+    def test_stop_terminates_process(self):
+        fake = _FakeRunner()
+        mock_proc = MagicMock()
+        mock_proc.stdout = iter([])
+        mock_proc.wait.return_value = 0
+        fake.set_popen_result(mock_proc)
+        tracker = DeauthTracker(runner=fake)
+        tracker.start(interface="mon0")
+        tracker.stop()
+        mock_proc.terminate.assert_called_once()
+
+    def test_stop_on_unstarted_tracker_is_safe(self):
+        tracker = DeauthTracker()
+        tracker.stop()  # should not raise
+
+    def test_reader_loop_records_deauth_events(self):
+        """Background thread parses tcpdump lines into DeauthEvent records."""
+        deauth_line = (
+            "11:04:34.360700 314us BSSID:00:14:6c:7e:40:80 "
+            "DA:00:0f:b5:46:11:19 SA:00:14:6c:7e:40:80 "
+            "DeAuthentication: Class 3 frame received"
+        )
+        fake = _FakeRunner()
+        mock_proc = MagicMock()
+        mock_proc.stdout = iter([deauth_line])
+        fake.set_popen_result(mock_proc)
+        tracker = DeauthTracker(runner=fake)
+        tracker.start(interface="mon0")
+        # Give the reader thread a moment to process
+        import time
+        time.sleep(0.1)
+        tracker.stop()
+        result = tracker.events()
+        assert len(result) == 1
+        assert result[0].bssid == "00:14:6c:7e:40:80"
+        assert result[0].subtype == "deauth"
 
 
 # ---------------------------------------------------------------------------

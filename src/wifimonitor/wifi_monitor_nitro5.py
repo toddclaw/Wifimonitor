@@ -380,6 +380,91 @@ def parse_tcpdump_deauth_line(line: str) -> DeauthEvent | None:
     )
 
 
+class DeauthTracker:
+    """Thread-safe deauthentication/disassociation frame tracker.
+
+    Uses a background thread to read tcpdump output capturing 802.11
+    management frames (deauth and disassoc) on a monitor-mode interface.
+    Call ``start(interface)`` to begin capture and ``stop()`` to terminate.
+    Use ``events(n)`` to retrieve the *n* most recent events.
+
+    Args:
+        runner: Optional CommandRunner for subprocess calls (testing seam).
+    """
+
+    def __init__(self, runner: CommandRunner | None = None) -> None:
+        self._runner = runner or _DEFAULT_RUNNER
+        self._events: list[DeauthEvent] = []
+        self._lock = threading.Lock()
+        self._process: subprocess.Popen | None = None
+        self._thread: threading.Thread | None = None
+
+    def record(self, event: DeauthEvent) -> None:
+        """Append *event* to the event list (thread-safe)."""
+        with self._lock:
+            self._events.append(event)
+
+    def events(self, n: int = 20) -> list[DeauthEvent]:
+        """Return the *n* most recent events, newest first."""
+        with self._lock:
+            return list(reversed(self._events[-n:]))
+
+    def start(self, interface: str) -> bool:
+        """Start capturing deauth/disassoc frames via tcpdump.
+
+        Args:
+            interface: Monitor-mode interface name (e.g. ``mon0``).
+
+        Returns:
+            True if tcpdump was launched successfully, False otherwise.
+        """
+        cmd = [
+            "tcpdump", "-l", "-e", "-i", interface,
+            "type", "mgt", "subtype", "deauth",
+            "or",
+            "type", "mgt", "subtype", "disassoc",
+        ]
+        env = _minimal_env()
+        try:
+            self._process = self._runner.popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+            )
+        except (FileNotFoundError, OSError):
+            return False
+
+        self._thread = threading.Thread(target=self._reader_loop, daemon=True)
+        self._thread.start()
+        return True
+
+    def stop(self) -> None:
+        """Terminate the tcpdump process and wait for the reader thread."""
+        if self._process:
+            self._process.terminate()
+            try:
+                self._process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self._process.kill()
+            self._process = None
+        if self._thread:
+            self._thread.join(timeout=2)
+            self._thread = None
+
+    def _reader_loop(self) -> None:
+        """Read deauth/disassoc frames from tcpdump stdout (background thread)."""
+        try:
+            assert self._process is not None and self._process.stdout is not None
+            for line in self._process.stdout:
+                event = parse_tcpdump_deauth_line(line)
+                if event:
+                    self.record(event)
+        except (ValueError, OSError):
+            pass  # Process was terminated
+
+
 # ---------------------------------------------------------------------------
 # DNS query capture (requires root / tcpdump)
 # ---------------------------------------------------------------------------
