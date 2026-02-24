@@ -250,6 +250,13 @@ If monitor mode shows "client counts enabled" but no networks or client counts a
 - ~~**Test coverage for wifi_monitor_nitro5.py** (3 pts)~~ -- **Complete.** Coverage raised to 98% (345 tests).
 - ~~**Scanner and Renderer protocols** (3 pts)~~ -- **Complete.** `ScannerProtocol` and `RendererProtocol` in `wifi_common.py`, `NmcliScanner` and `RichNetworkRenderer` adapters, `main()` uses protocol-typed composition.
 - **UX agent** (3 pts) -- Create a UX agent that evaluates and suggests improvements for both the CLI/TUI (Rich tables, layout, color, information density) and future GUI surfaces. Integrate into the manager pipeline alongside the existing review agents.
+- **Module decomposition** (19 pts) -- Break the 2220-line `wifi_monitor_nitro5.py` monolith into focused modules, each with its own library functions, tests, and (where applicable) standalone `main()`. Broken into 7 phases:
+  - Phase 1 (3 pts) -- Extract `scanning/nmcli.py`: `scan_wifi_nmcli`, `parse_nmcli_output`, `_split_nmcli_line`, `_pct_to_dbm`, `_map_nmcli_security`. Move `_minimal_env` to `wifi_common.py`. Standalone `python -m wifimonitor.scanning.nmcli` main.
+  - Phase 2 (3 pts) -- Extract `capture/dns.py` (`DnsTracker`, `parse_tcpdump_dns_line`) and `capture/deauth.py` (`DeauthTracker`, `parse_tcpdump_deauth_line`, `classify_deauth_events`). Each with standalone main.
+  - Phase 3 (3 pts) -- Extract `detection/rogue.py` (`load_baseline`, `save_baseline`, `detect_rogue_aps`) and `detection/arp.py` (`ArpScanner`, subnet helpers). Rogue gets standalone main for cron-style checks.
+  - Phase 4 (3 pts) -- Extract `display/tables.py` (all `build_*_table` functions, `_bar_string`, `_rich_color`) and `credentials.py` (`load_credentials`, `connect_wifi_nmcli`).
+  - Phase 5 (5 pts) -- Extract `scanning/airodump.py` (`AirodumpScanner`, all monitor mode helpers). Largest piece with complex cross-dependencies.
+  - Phase 6 (2 pts) -- Rename remaining file to `cli.py` (~200 lines: `_parse_args`, `main`), update `__main__.py` and `pyproject.toml` entry points. Remove temporary re-exports.
 - ~~**Debugging capability**~~ -- **Complete.** `--debug` flag writes Python debug output to `/tmp/wifi_monitor_nitro5_debug.log`; `_dump_startup_config` logs all settings at startup; strategic debug points throughout `AirodumpScanner`.
 
 ### Features

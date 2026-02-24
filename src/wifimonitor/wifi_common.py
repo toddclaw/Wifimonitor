@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import logging
+import os
 import re
 import subprocess
 from dataclasses import dataclass
@@ -234,6 +235,23 @@ class SubprocessRunner:
             cwd=cwd,
             start_new_session=start_new_session,
         )
+
+
+# ---------------------------------------------------------------------------
+# Subprocess utilities
+# ---------------------------------------------------------------------------
+
+def _minimal_env() -> dict[str, str]:
+    """Build a minimal environment for subprocess calls.
+
+    Only passes PATH, LC_ALL, and HOME — avoids leaking the full user
+    environment into child processes.
+    """
+    return {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "LC_ALL": "C",
+        "HOME": os.environ.get("HOME", ""),
+    }
 
 
 # ---------------------------------------------------------------------------

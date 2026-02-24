@@ -51,6 +51,7 @@ from wifimonitor.wifi_common import (
     signal_to_bars, signal_color, security_color,
     COLOR_TO_RICH,
     CommandRunner, SubprocessRunner,
+    _minimal_env,
 )
 from wifimonitor.platform_detect import (
     detect_platform,
@@ -73,23 +74,6 @@ _DEFAULT_RUNNER = SubprocessRunner()
 def _rich_color(rgb: tuple) -> str:
     """Convert an RGB tuple to a Rich color name."""
     return COLOR_TO_RICH.get(rgb, "white")
-
-
-# ---------------------------------------------------------------------------
-# nmcli scanning
-# ---------------------------------------------------------------------------
-
-def _minimal_env() -> dict[str, str]:
-    """Build a minimal environment for subprocess calls.
-
-    Only passes PATH, LC_ALL, and HOME — avoids leaking the full user
-    environment into child processes.
-    """
-    return {
-        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-        "LC_ALL": "C",
-        "HOME": os.environ.get("HOME", ""),
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -1414,132 +1398,18 @@ class AirodumpScanner:
                 pass
 
 
-def scan_wifi_nmcli(
-    interface: str | None = None,
-    *,
-    runner: CommandRunner | None = None,
-) -> list[Network]:
-    """Scan for WiFi networks using nmcli.
+# ---------------------------------------------------------------------------
+# nmcli scanning — canonical implementation in wifimonitor.scanning.nmcli
+# Re-exported here for backward compatibility during module decomposition.
+# ---------------------------------------------------------------------------
 
-    Triggers a rescan first (needs root), then lists cached results.
-    Falls back to cached results if rescan fails (non-root).
-    Returns an empty list if nmcli is unavailable or times out.
-
-    Args:
-        interface: Optional wireless interface name.
-        runner: Optional CommandRunner for subprocess calls (testing seam).
-    """
-    runner = runner or _DEFAULT_RUNNER
-    env = _minimal_env()
-
-    rescan_cmd = ["nmcli", "device", "wifi", "rescan"]
-    if interface:
-        rescan_cmd += ["ifname", interface]
-
-    try:
-        runner.run(rescan_cmd, capture_output=True, timeout=15, env=env)
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        pass  # Rescan failure is non-fatal; fall through to list
-
-    list_cmd = [
-        "nmcli", "-t",
-        "-f", "BSSID,SSID,CHAN,SIGNAL,SECURITY",
-        "device", "wifi", "list",
-    ]
-    if interface:
-        list_cmd += ["ifname", interface]
-
-    try:
-        result = runner.run(
-            list_cmd, capture_output=True, text=True, timeout=15, env=env,
-        )
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        return []
-
-    return parse_nmcli_output(result.stdout)
-
-
-def parse_nmcli_output(output: str) -> list[Network]:
-    """Parse nmcli terse output into a list of Network objects.
-
-    nmcli -t uses colon as delimiter and escapes literal colons as ``\\:``.
-    """
-    networks: list[Network] = []
-
-    for line in output.strip().splitlines():
-        line = line.strip()
-        if not line:
-            continue
-
-        fields = _split_nmcli_line(line)
-        if len(fields) < 5:
-            continue
-
-        bssid = fields[0].lower()
-        ssid = fields[1]
-        security = _map_nmcli_security(fields[4])
-
-        try:
-            channel = int(fields[2])
-        except ValueError:
-            channel = 0
-
-        try:
-            signal_pct = int(fields[3])
-        except ValueError:
-            signal_pct = 0
-
-        signal_dbm = _pct_to_dbm(signal_pct)
-
-        networks.append(Network(
-            bssid=bssid,
-            ssid=ssid,
-            signal=signal_dbm,
-            channel=channel,
-            security=security,
-        ))
-
-    networks.sort(key=lambda n: n.signal, reverse=True)
-    return networks
-
-
-def _split_nmcli_line(line: str) -> list[str]:
-    """Split a nmcli terse-mode line on unescaped colons.
-
-    Colons inside field values are escaped as ``\\:``.  We split on
-    unescaped colons and then unescape the fields.
-    """
-    # Split on colons NOT preceded by a backslash
-    parts = re.split(r"(?<!\\):", line)
-    return [p.replace("\\:", ":").replace("\\\\", "\\") for p in parts]
-
-
-def _pct_to_dbm(pct: int) -> int:
-    """Convert nmcli signal percentage (0-100) to approximate dBm.
-
-    nmcli maps dBm to percentage roughly as:
-        dBm = (pct / 2) - 100
-    This is the inverse of the common NM formula.
-    Values outside 0-100 are clamped to prevent nonsensical results.
-    """
-    pct = max(0, min(100, pct))
-    return (pct // 2) - 100
-
-
-def _map_nmcli_security(security: str) -> str:
-    """Map nmcli SECURITY field to a short label."""
-    s = security.upper()
-    if "WPA3" in s or "SAE" in s:
-        return "WPA3"
-    if "WPA2" in s:
-        return "WPA2"
-    if "WPA" in s:
-        return "WPA"
-    if "WEP" in s:
-        return "WEP"
-    if not s or s == "--":
-        return "Open"
-    return "Open"
+from wifimonitor.scanning.nmcli import (  # noqa: E402
+    scan_wifi_nmcli,
+    parse_nmcli_output,  # noqa: F401 — backward-compat re-export
+    _split_nmcli_line,
+    _pct_to_dbm,  # noqa: F401 — backward-compat re-export
+    _map_nmcli_security,  # noqa: F401 — backward-compat re-export
+)
 
 
 # ---------------------------------------------------------------------------
