@@ -25,10 +25,8 @@ if sys.version_info < MIN_PYTHON:
 
 import argparse
 import atexit
-import collections
 import csv
 import io
-import json
 from datetime import datetime
 import glob
 import logging
@@ -37,7 +35,6 @@ import re
 import signal
 import stat
 import subprocess
-import threading
 import time
 
 from rich.console import Console, Group
@@ -165,623 +162,48 @@ def connect_wifi_nmcli(
 
 
 # ---------------------------------------------------------------------------
-# Known-good baseline (rogue AP detection)
+# Known-good baseline & rogue AP detection (canonical: detection/rogue.py)
 # ---------------------------------------------------------------------------
 
-
-def load_baseline(filepath: str) -> list[KnownNetwork]:
-    """Load a known-good network baseline from a JSON file.
-
-    Args:
-        filepath: Path to the JSON baseline file.
-
-    Returns:
-        List of :class:`KnownNetwork` objects.  Returns an empty list if the
-        file is missing, unreadable, or contains invalid JSON.
-    """
-    try:
-        with open(filepath, encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, json.JSONDecodeError) as exc:
-        _LOGGER.warning("baseline: failed to load %s: %s", filepath, exc)
-        return []
-
-    if not isinstance(data, list):
-        _LOGGER.warning("baseline: expected a JSON array in %s", filepath)
-        return []
-
-    # Check file permissions (warn if world-writable)
-    try:
-        mode = os.stat(filepath).st_mode
-        if mode & stat.S_IWOTH:
-            import sys
-            print(
-                f"WARNING: baseline file {filepath!r} is world-writable "
-                "(chmod 600 recommended)",
-                file=sys.stderr,
-            )
-    except OSError:
-        pass
-
-    result: list[KnownNetwork] = []
-    for i, entry in enumerate(data):
-        if not isinstance(entry, dict):
-            _LOGGER.debug("baseline: skipping non-dict entry at index %d", i)
-            continue
-        ssid = entry.get("ssid")
-        bssid = entry.get("bssid")
-        if not ssid or not bssid:
-            _LOGGER.debug("baseline: skipping entry at index %d (missing ssid/bssid)", i)
-            continue
-        channel = entry.get("channel", 0)
-        if not isinstance(channel, int):
-            channel = 0
-        result.append(KnownNetwork(
-            ssid=str(ssid),
-            bssid=str(bssid).lower(),
-            channel=channel,
-        ))
-
-    _LOGGER.debug("baseline: loaded %d known networks from %s", len(result), filepath)
-    return result
-
-
-def save_baseline(filepath: str, networks: list[Network]) -> int:
-    """Save scanned networks as a known-good baseline JSON file.
-
-    Args:
-        filepath: Path to write the JSON baseline file.
-        networks: List of scanned networks to save.
-
-    Returns:
-        Number of networks written.  Returns 0 if writing fails.
-    """
-    data = [
-        {
-            "ssid": net.ssid,
-            "bssid": net.bssid.lower(),
-            "channel": net.channel,
-        }
-        for net in networks
-        if net.ssid  # skip hidden networks
-    ]
-    try:
-        with open(filepath, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-            f.write("\n")
-    except OSError as exc:
-        _LOGGER.warning("baseline: failed to write %s: %s", filepath, exc)
-        return 0
-
-    _LOGGER.debug("baseline: saved %d networks to %s", len(data), filepath)
-    return len(data)
-
-
-# ---------------------------------------------------------------------------
-# Rogue AP detection
-# ---------------------------------------------------------------------------
-
-
-def detect_rogue_aps(
-    networks: list[Network],
-    baseline: list[KnownNetwork],
-) -> list[RogueAlert]:
-    """Compare scanned networks against a known-good baseline.
-
-    For each scanned network whose SSID appears in the baseline, checks:
-
-    1. **Unknown BSSID** — the SSID is known but this BSSID is not in the
-       baseline → ``reason="unknown_bssid"``.
-    2. **Unexpected channel** — the BSSID *is* known but the channel does
-       not match (and the baseline channel is not 0, which means "any") →
-       ``reason="unexpected_channel"``.
-
-    Networks whose SSID is *not* in the baseline (or that have an empty
-    SSID) are silently ignored — they are not tracked.
-
-    Args:
-        networks: Current scan results.
-        baseline: Known-good SSID/BSSID/channel tuples.
-
-    Returns:
-        A list of :class:`RogueAlert` objects (may be empty).
-    """
-    if not networks or not baseline:
-        return []
-
-    # Build lookup: ssid -> {bssid: channel, ...}
-    ssid_to_bssids: dict[str, dict[str, int]] = {}
-    for kn in baseline:
-        ssid_to_bssids.setdefault(kn.ssid, {})[kn.bssid.lower()] = kn.channel
-
-    alerts: list[RogueAlert] = []
-    for net in networks:
-        if not net.ssid:
-            continue  # hidden — skip
-        known = ssid_to_bssids.get(net.ssid)
-        if known is None:
-            continue  # SSID not in baseline — not tracked
-
-        expected_bssids = sorted(known.keys())
-        expected_channels = sorted(known.values())
-        bssid_lower = net.bssid.lower()
-
-        if bssid_lower not in known:
-            alerts.append(RogueAlert(
-                network=net,
-                reason="unknown_bssid",
-                expected_bssids=expected_bssids,
-                expected_channels=expected_channels,
-            ))
-        else:
-            baseline_channel = known[bssid_lower]
-            if (
-                baseline_channel != 0
-                and net.channel != 0
-                and net.channel != baseline_channel
-            ):
-                alerts.append(RogueAlert(
-                    network=net,
-                    reason="unexpected_channel",
-                    expected_bssids=expected_bssids,
-                    expected_channels=expected_channels,
-                ))
-
-    return alerts
-
-
-# ---------------------------------------------------------------------------
-# Deauth / disassoc frame parsing (tcpdump -e on monitor interface)
-# ---------------------------------------------------------------------------
-
-# Typical tcpdump -e output on a monitor interface:
-#   11:04:34.360700 314us BSSID:00:14:6c:7e:40:80 DA:00:0f:b5:46:11:19
-#   SA:00:14:6c:7e:40:80 DeAuthentication: Class 3 frame received …
-_MAC = r"[0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5}"
-_DEAUTH_RE = re.compile(
-    rf"BSSID:(?P<bssid>{_MAC})\s+"
-    rf"DA:(?P<da>{_MAC})\s+"
-    rf"SA:(?P<sa>{_MAC})\s+"
-    rf"(?P<type>DeAuthentication|Disassociation):\s*(?P<reason>.*)",
+from wifimonitor.detection.rogue import (  # noqa: E402
+    load_baseline,  # noqa: F401 — backward-compat re-export
+    save_baseline,  # noqa: F401 — backward-compat re-export
+    detect_rogue_aps,  # noqa: F401 — backward-compat re-export
 )
 
 
-def parse_tcpdump_deauth_line(line: str) -> DeauthEvent | None:
-    """Extract a deauth/disassoc event from a tcpdump ``-e`` output line.
-
-    Returns a :class:`DeauthEvent` if the line describes a
-    DeAuthentication or Disassociation frame, otherwise ``None``.
-    """
-    match = _DEAUTH_RE.search(line)
-    if not match:
-        return None
-    subtype = "deauth" if match.group("type") == "DeAuthentication" else "disassoc"
-    return DeauthEvent(
-        bssid=match.group("bssid").lower(),
-        source=match.group("sa").lower(),
-        destination=match.group("da").lower(),
-        reason=match.group("reason").strip(),
-        subtype=subtype,
-    )
-
-
-class DeauthTracker:
-    """Thread-safe deauthentication/disassociation frame tracker.
-
-    Uses a background thread to read tcpdump output capturing 802.11
-    management frames (deauth and disassoc) on a monitor-mode interface.
-    Call ``start(interface)`` to begin capture and ``stop()`` to terminate.
-    Use ``events(n)`` to retrieve the *n* most recent events.
-
-    Args:
-        runner: Optional CommandRunner for subprocess calls (testing seam).
-    """
-
-    def __init__(self, runner: CommandRunner | None = None) -> None:
-        self._runner = runner or _DEFAULT_RUNNER
-        self._events: list[DeauthEvent] = []
-        self._lock = threading.Lock()
-        self._process: subprocess.Popen | None = None
-        self._thread: threading.Thread | None = None
-
-    def record(self, event: DeauthEvent) -> None:
-        """Append *event* to the event list (thread-safe)."""
-        with self._lock:
-            self._events.append(event)
-
-    def events(self, n: int = 20) -> list[DeauthEvent]:
-        """Return the *n* most recent events, newest first."""
-        with self._lock:
-            return list(reversed(self._events[-n:]))
-
-    def start(self, interface: str) -> bool:
-        """Start capturing deauth/disassoc frames via tcpdump.
-
-        Args:
-            interface: Monitor-mode interface name (e.g. ``mon0``).
-
-        Returns:
-            True if tcpdump was launched successfully, False otherwise.
-        """
-        cmd = [
-            "tcpdump", "-l", "-e", "-i", interface,
-            "type", "mgt", "subtype", "deauth",
-            "or",
-            "type", "mgt", "subtype", "disassoc",
-        ]
-        env = _minimal_env()
-        try:
-            self._process = self._runner.popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                env=env,
-            )
-        except (FileNotFoundError, OSError):
-            return False
-
-        self._thread = threading.Thread(target=self._reader_loop, daemon=True)
-        self._thread.start()
-        return True
-
-    def stop(self) -> None:
-        """Terminate the tcpdump process and wait for the reader thread."""
-        if self._process:
-            self._process.terminate()
-            try:
-                self._process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self._process.kill()
-            self._process = None
-        if self._thread:
-            self._thread.join(timeout=2)
-            self._thread = None
-
-    def _reader_loop(self) -> None:
-        """Read deauth/disassoc frames from tcpdump stdout (background thread)."""
-        try:
-            assert self._process is not None and self._process.stdout is not None
-            for line in self._process.stdout:
-                event = parse_tcpdump_deauth_line(line)
-                if event:
-                    self.record(event)
-        except (ValueError, OSError):
-            pass  # Process was terminated
-
-
 # ---------------------------------------------------------------------------
-# Deauth rate-based severity classification
+# Deauth / disassoc capture & classification (canonical: capture/deauth.py)
 # ---------------------------------------------------------------------------
 
-_BROADCAST = "ff:ff:ff:ff:ff:ff"
-
-
-def classify_deauth_events(
-    events: list[DeauthEvent],
-    baseline: list[KnownNetwork] | None = None,
-) -> list[DeauthSummary]:
-    """Aggregate deauth/disassoc events by BSSID and classify severity.
-
-    Severity thresholds (frame count per BSSID):
-        - **normal**: 1-2 frames (routine roaming/AP restart)
-        - **suspicious**: 3-9 frames (may indicate targeted disruption)
-        - **attack**: 10+ frames (likely active deauth attack)
-
-    Args:
-        events: Raw deauth/disassoc events from :class:`DeauthTracker`.
-        baseline: Optional known-good network list.  When provided, only
-            BSSIDs found in the baseline are included in the output.  This
-            focuses alerts on networks you care about.
-
-    Returns:
-        A list of :class:`DeauthSummary` objects sorted by ``total_count``
-        descending (highest activity first).
-    """
-    if not events:
-        return []
-
-    # Optional: restrict to known BSSIDs
-    known_bssids: set[str] | None = None
-    if baseline:
-        known_bssids = {kn.bssid.lower() for kn in baseline}
-
-    # Aggregate by BSSID
-    by_bssid: dict[str, list[DeauthEvent]] = {}
-    for evt in events:
-        bssid = evt.bssid.lower()
-        if known_bssids is not None and bssid not in known_bssids:
-            continue
-        by_bssid.setdefault(bssid, []).append(evt)
-
-    summaries: list[DeauthSummary] = []
-    for bssid, bssid_events in by_bssid.items():
-        total = len(bssid_events)
-        broadcast = sum(1 for e in bssid_events if e.destination == _BROADCAST)
-        targets = {
-            e.destination for e in bssid_events if e.destination != _BROADCAST
-        }
-
-        if total >= 10:
-            severity = "attack"
-        elif total >= 3:
-            severity = "suspicious"
-        else:
-            severity = "normal"
-
-        summaries.append(DeauthSummary(
-            bssid=bssid,
-            total_count=total,
-            broadcast_count=broadcast,
-            unique_targets=len(targets),
-            severity=severity,
-        ))
-
-    summaries.sort(key=lambda s: s.total_count, reverse=True)
-    return summaries
-
-
-# ---------------------------------------------------------------------------
-# DNS query capture (requires root / tcpdump)
-# ---------------------------------------------------------------------------
-
-_DNS_QUERY_RE = re.compile(
-    r"\b(?:A|AAAA|PTR|MX|CNAME|TXT|SRV|SOA|NS|ANY|HTTPS|SVCB)\?\s+(\S+?)\.?\s"
+from wifimonitor.capture.deauth import (  # noqa: E402
+    parse_tcpdump_deauth_line,  # noqa: F401 — backward-compat re-export
+    DeauthTracker,  # noqa: F401 — backward-compat re-export
+    classify_deauth_events,  # noqa: F401 — backward-compat re-export
 )
 
 
-def parse_tcpdump_dns_line(line: str) -> str | None:
-    """Extract the queried domain name from a tcpdump output line.
+# ---------------------------------------------------------------------------
+# DNS query capture (canonical: capture/dns.py)
+# ---------------------------------------------------------------------------
 
-    Only matches DNS *query* lines (those containing ``A?``, ``AAAA?``, etc.).
-    Response lines are ignored.  Returns the domain without trailing dot,
-    or None if the line is not a DNS query.
-    """
-    match = _DNS_QUERY_RE.search(line)
-    if match:
-        return match.group(1).rstrip(".")
-    return None
-
-
-class DnsTracker:
-    """Thread-safe DNS query frequency tracker.
-
-    Uses a background thread to read tcpdump output and count queried
-    domain names.  Call ``start()`` to begin capture and ``stop()`` to
-    terminate.  Use ``top(n)`` to retrieve the *n* most queried domains.
-
-    Args:
-        runner: Optional CommandRunner for subprocess calls (testing seam).
-    """
-
-    def __init__(self, runner: CommandRunner | None = None) -> None:
-        self._runner = runner or _DEFAULT_RUNNER
-        self._counts: collections.Counter[str] = collections.Counter()
-        self._lock = threading.Lock()
-        self._process: subprocess.Popen | None = None
-        self._thread: threading.Thread | None = None
-
-    def record(self, domain: str) -> None:
-        """Increment the query count for *domain* (thread-safe)."""
-        with self._lock:
-            self._counts[domain] += 1
-
-    def top(self, n: int = 15) -> list[tuple[str, int]]:
-        """Return the *n* most queried domains as ``(domain, count)`` pairs."""
-        with self._lock:
-            return self._counts.most_common(n)
-
-    def start(self, interface: str | None = None) -> bool:
-        """Start capturing DNS queries via tcpdump.
-
-        Returns True if tcpdump was launched successfully, False if
-        tcpdump is not installed or cannot be started.
-        """
-        cmd = ["tcpdump", "-l", "-n", "udp", "port", "53"]
-        if interface:
-            cmd = ["tcpdump", "-l", "-n", "-i", interface, "udp", "port", "53"]
-
-        env = _minimal_env()
-        try:
-            self._process = self._runner.popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                env=env,
-            )
-        except (FileNotFoundError, OSError):
-            return False
-
-        self._thread = threading.Thread(target=self._reader_loop, daemon=True)
-        self._thread.start()
-        return True
-
-    def stop(self) -> None:
-        """Terminate the tcpdump process and wait for the reader thread."""
-        if self._process:
-            self._process.terminate()
-            try:
-                self._process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self._process.kill()
-            self._process = None
-        if self._thread:
-            self._thread.join(timeout=2)
-            self._thread = None
-
-    def _reader_loop(self) -> None:
-        """Read DNS queries from tcpdump stdout (runs in background thread)."""
-        try:
-            assert self._process is not None and self._process.stdout is not None
-            for line in self._process.stdout:
-                domain = parse_tcpdump_dns_line(line)
-                if domain:
-                    self.record(domain)
-        except (ValueError, OSError):
-            pass  # Process was terminated
+from wifimonitor.capture.dns import (  # noqa: E402
+    parse_tcpdump_dns_line,  # noqa: F401 — backward-compat re-export
+    DnsTracker,  # noqa: F401 — backward-compat re-export
+)
 
 
 # ---------------------------------------------------------------------------
-# ARP-based client detection (works on any adapter, including Intel)
+# ARP-based client detection (canonical: detection/arp.py)
 # ---------------------------------------------------------------------------
 
-def _get_connected_bssid(
-    interface: str | None = None,
-    *,
-    runner: CommandRunner | None = None,
-) -> str | None:
-    """Return the BSSID of the currently connected WiFi network, or None.
-
-    Uses ``nmcli -t -f ACTIVE,BSSID device wifi list`` to find the active
-    entry.  Returns a lowercase BSSID string or None if not connected.
-
-    Args:
-        interface: Optional wireless interface name.
-        runner: Optional CommandRunner for subprocess calls (testing seam).
-    """
-    runner = runner or _DEFAULT_RUNNER
-    env = _minimal_env()
-    cmd = ["nmcli", "-t", "-f", "ACTIVE,BSSID", "device", "wifi", "list"]
-    if interface:
-        cmd += ["ifname", interface]
-    try:
-        result = runner.run(cmd, capture_output=True, text=True, timeout=10, env=env)
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        return None
-    for line in result.stdout.strip().splitlines():
-        fields = _split_nmcli_line(line.strip())
-        if len(fields) >= 2 and fields[0].lower() == "yes":
-            return fields[1].lower()
-    return None
-
-
-def _get_subnet(
-    interface: str | None = None,
-    *,
-    runner: CommandRunner | None = None,
-) -> str | None:
-    """Return the local subnet in CIDR notation for the given interface.
-
-    Runs ``ip -4 route show dev <interface>`` and extracts the first
-    ``proto kernel scope link`` route, e.g. ``192.168.1.0/24``.
-    Returns None if not connected or command fails.
-
-    Args:
-        interface: Optional wireless interface name.
-        runner: Optional CommandRunner for subprocess calls (testing seam).
-    """
-    runner = runner or _DEFAULT_RUNNER
-    env = _minimal_env()
-    cmd = ["ip", "-4", "route"]
-    if interface:
-        cmd += ["show", "dev", interface]
-    try:
-        result = runner.run(cmd, capture_output=True, text=True, timeout=5, env=env)
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        return None
-    subnet_re = re.compile(r'^(\d{1,3}(?:\.\d{1,3}){3}/\d{1,2})\s')
-    for line in result.stdout.strip().splitlines():
-        m = subnet_re.match(line.strip())
-        if m:
-            return m.group(1)
-    return None
-
-
-_ARP_HOST_RE = re.compile(r'^\d{1,3}(?:\.\d{1,3}){3}\s+[0-9a-f]{2}(?::[0-9a-f]{2}){5}', re.I)
-
-
-def _parse_arp_scan_output(output: str) -> int:
-    """Count unique responding hosts from arp-scan output.
-
-    Args:
-        output: Raw stdout from ``arp-scan --localnet``.
-
-    Returns:
-        Number of unique IP addresses that responded.
-    """
-    return sum(1 for line in output.splitlines() if _ARP_HOST_RE.match(line.strip()))
-
-
-def _parse_nmap_output(output: str) -> int:
-    """Count hosts from nmap greppable output (``nmap -sn -oG -``).
-
-    Args:
-        output: Raw stdout from ``nmap -sn ... -oG -``.
-
-    Returns:
-        Number of hosts with ``Status: Up``.
-    """
-    return sum(
-        1 for line in output.splitlines()
-        if line.startswith("Host:") and "Status: Up" in line
-    )
-
-
-class ArpScanner:
-    """Detect active clients on the connected subnet via ARP scanning.
-
-    Uses ``arp-scan --localnet`` when available (requires root); falls back
-    to ``nmap -sn`` otherwise.  Returns the count of responding hosts so
-    the caller can apply it to the connected network's BSSID.
-
-    Args:
-        interface: Optional wireless interface name to scan on.
-        runner: Optional CommandRunner for subprocess calls (testing seam).
-    """
-
-    def __init__(
-        self,
-        interface: str | None = None,
-        runner: CommandRunner | None = None,
-    ) -> None:
-        self._interface = interface
-        self._runner = runner or _DEFAULT_RUNNER
-
-    def scan(self) -> int:
-        """Return the count of active hosts on the connected subnet.
-
-        Tries ``arp-scan`` first, falls back to ``nmap``.  Returns 0 on
-        any failure so the caller degrades gracefully.
-        """
-        count = self._scan_arp()
-        if count is not None:
-            return count
-        count = self._scan_nmap()
-        return count if count is not None else 0
-
-    def _scan_arp(self) -> int | None:
-        """Run arp-scan and return host count, or None if unavailable."""
-        cmd = ["arp-scan", "--localnet", "-q"]
-        if self._interface:
-            cmd += ["-I", self._interface]
-        env = _minimal_env()
-        try:
-            result = self._runner.run(
-                cmd, capture_output=True, text=True, timeout=30, env=env
-            )
-        except (subprocess.TimeoutExpired, OSError):
-            return None
-        except FileNotFoundError:
-            return None  # arp-scan not installed
-        if result.returncode not in (0, 1):  # arp-scan exits 1 on partial results
-            return None
-        return _parse_arp_scan_output(result.stdout)
-
-    def _scan_nmap(self) -> int | None:
-        """Run nmap -sn as a fallback and return host count, or None."""
-        subnet = _get_subnet(self._interface, runner=self._runner)
-        if not subnet:
-            return None
-        cmd = ["nmap", "-sn", subnet, "-oG", "-"]
-        env = _minimal_env()
-        try:
-            result = self._runner.run(
-                cmd, capture_output=True, text=True, timeout=60, env=env
-            )
-        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-            return None
-        return _parse_nmap_output(result.stdout)
+from wifimonitor.detection.arp import (  # noqa: E402
+    _get_connected_bssid,  # noqa: F401 — backward-compat re-export
+    _get_subnet,  # noqa: F401 — backward-compat re-export
+    _parse_arp_scan_output,  # noqa: F401 — backward-compat re-export
+    _parse_nmap_output,  # noqa: F401 — backward-compat re-export
+    ArpScanner,  # noqa: F401 — backward-compat re-export
+)
 
 
 # ---------------------------------------------------------------------------
@@ -1406,7 +828,7 @@ class AirodumpScanner:
 from wifimonitor.scanning.nmcli import (  # noqa: E402
     scan_wifi_nmcli,
     parse_nmcli_output,  # noqa: F401 — backward-compat re-export
-    _split_nmcli_line,
+    _split_nmcli_line,  # noqa: F401 — backward-compat re-export
     _pct_to_dbm,  # noqa: F401 — backward-compat re-export
     _map_nmcli_security,  # noqa: F401 — backward-compat re-export
 )

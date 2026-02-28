@@ -17,8 +17,20 @@ Wifimonitor/
 │   ├── __init__.py            # Package metadata/version
 │   ├── __main__.py            # Supports: python -m wifimonitor
 │   ├── wifi_monitor_nitro5.py # Laptop entry point (Rich TUI, nmcli)
-│   └── wifi_common.py         # Shared: Network dataclass, signal/color helpers,
-│                              #         airodump-ng CSV parser (Pi, future)
+│   ├── wifi_common.py         # Shared: Network dataclass, signal/color helpers,
+│   │                          #         airodump-ng CSV parser (Pi, future)
+│   ├── platform_detect.py     # Auto-detect platform and WiFi interfaces
+│   ├── scanning/
+│   │   ├── __init__.py
+│   │   └── nmcli.py           # nmcli scanning (scan, parse, standalone CLI)
+│   ├── capture/
+│   │   ├── __init__.py
+│   │   ├── dns.py             # DNS query capture (DnsTracker, standalone CLI)
+│   │   └── deauth.py          # Deauth frame capture + classify (standalone CLI)
+│   └── detection/
+│       ├── __init__.py
+│       ├── rogue.py           # Rogue AP detection + baseline I/O (standalone CLI)
+│       └── arp.py             # ARP client detection (ArpScanner, subnet helpers)
 ├── wifi_monitor.py            # Raspberry Pi entry point (legacy script)
 ├── pyproject.toml             # Packaging + tool config (ruff, mypy)
 ├── requirements.txt           # Pi requirements
@@ -26,8 +38,13 @@ Wifimonitor/
 ├── requirements-dev.txt       # Dev/CI tooling (pytest, ruff, mypy, pip-audit)
 ├── .github/workflows/ci.yml   # CI pipeline (test, lint, security)
 ├── tests/
-│   ├── test_wifi_monitor_nitro5.py   # 274 tests — parsing, rendering, scanning, credentials, DNS, ARP, monitor helpers, main()
-│   └── test_wifi_common.py           #  71 tests — helpers, airodump CSV, validation, colors, protocol
+│   ├── test_wifi_monitor_nitro5.py   # main monolith tests
+│   ├── test_wifi_common.py           # helpers, airodump CSV, validation, colors
+│   ├── test_scanning_nmcli.py        # scanning/nmcli.py tests
+│   ├── test_capture_dns.py           # capture/dns.py tests
+│   ├── test_capture_deauth.py        # capture/deauth.py tests
+│   ├── test_detection_rogue.py       # detection/rogue.py tests
+│   └── test_detection_arp.py         # detection/arp.py tests
 ├── .claude/
 │   └── agents/
 │       ├── architect-agent.md
