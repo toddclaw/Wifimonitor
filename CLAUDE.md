@@ -27,6 +27,10 @@ Wifimonitor/
 │   │   ├── __init__.py
 │   │   ├── dns.py             # DNS query capture (DnsTracker, standalone CLI)
 │   │   └── deauth.py          # Deauth frame capture + classify (standalone CLI)
+│   ├── display/
+│   │   ├── __init__.py
+│   │   └── tables.py          # Rich TUI table builders (all build_*_table funcs)
+│   ├── credentials.py         # Credential loading + WiFi connect (standalone CLI)
 │   └── detection/
 │       ├── __init__.py
 │       ├── rogue.py           # Rogue AP detection + baseline I/O (standalone CLI)
@@ -44,7 +48,9 @@ Wifimonitor/
 │   ├── test_capture_dns.py           # capture/dns.py tests
 │   ├── test_capture_deauth.py        # capture/deauth.py tests
 │   ├── test_detection_rogue.py       # detection/rogue.py tests
-│   └── test_detection_arp.py         # detection/arp.py tests
+│   ├── test_detection_arp.py         # detection/arp.py tests
+│   ├── test_display_tables.py        # display/tables.py tests
+│   └── test_credentials.py           # credentials.py tests
 ├── .claude/
 │   └── agents/
 │       ├── architect-agent.md

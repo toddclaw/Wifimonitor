@@ -212,7 +212,7 @@ python3 -m pytest tests/ -v
 python3 -m pytest tests/ -v --cov=src/ --cov-report=term-missing
 ```
 
-653 tests cover parsing, signal helpers, security mapping, Rich table rendering, subprocess error handling, credentials file loading, network connection, DNS query capture, deauth frame capture, rate-based severity classification, and alert display, ARP client detection, connected network indicator, monitor mode helpers, platform detection, baseline I/O, rogue AP detection and alert display, scanner/renderer protocols, main() integration, input validation, CommandRunner injection, standalone CLI modules, and edge cases.
+715 tests cover parsing, signal helpers, security mapping, Rich table rendering, subprocess error handling, credentials file loading, network connection, DNS query capture, deauth frame capture, rate-based severity classification, and alert display, ARP client detection, connected network indicator, monitor mode helpers, platform detection, baseline I/O, rogue AP detection and alert display, scanner/renderer protocols, main() integration, input validation, CommandRunner injection, standalone CLI modules, and edge cases.
 
 ## Security Hardening
 
@@ -254,7 +254,7 @@ If monitor mode shows "client counts enabled" but no networks or client counts a
   - ~~Phase 1 (3 pts)~~ -- **Complete.** Extract `scanning/nmcli.py`: `scan_wifi_nmcli`, `parse_nmcli_output`, `_split_nmcli_line`, `_pct_to_dbm`, `_map_nmcli_security`. Move `_minimal_env` to `wifi_common.py`. Standalone `python -m wifimonitor.scanning.nmcli` main. 38 tests.
   - ~~Phase 2 (3 pts)~~ -- **Complete.** Extract `capture/dns.py` (`DnsTracker`, `parse_tcpdump_dns_line`) and `capture/deauth.py` (`DeauthTracker`, `parse_tcpdump_deauth_line`, `classify_deauth_events`). Each with standalone main. 55 tests.
   - ~~Phase 3 (3 pts)~~ -- **Complete.** Extract `detection/rogue.py` (`load_baseline`, `save_baseline`, `detect_rogue_aps`) and `detection/arp.py` (`ArpScanner`, subnet helpers). Rogue gets standalone main for cron-style checks. 28 tests.
-  - Phase 4 (3 pts) -- Extract `display/tables.py` (all `build_*_table` functions, `_bar_string`, `_rich_color`) and `credentials.py` (`load_credentials`, `connect_wifi_nmcli`).
+  - ~~Phase 4 (3 pts)~~ -- **Complete.** Extract `display/tables.py` (all `build_*_table` functions, `_bar_string`, `_rich_color`) and `credentials.py` (`load_credentials`, `connect_wifi_nmcli`). Each with standalone CLI. 62 tests.
   - Phase 5 (5 pts) -- Extract `scanning/airodump.py` (`AirodumpScanner`, all monitor mode helpers). Largest piece with complex cross-dependencies.
   - Phase 6 (2 pts) -- Rename remaining file to `cli.py` (~200 lines: `_parse_args`, `main`), update `__main__.py` and `pyproject.toml` entry points. Remove temporary re-exports.
 - ~~**Debugging capability**~~ -- **Complete.** `--debug` flag writes Python debug output to `/tmp/wifi_monitor_nitro5_debug.log`; `_dump_startup_config` logs all settings at startup; strategic debug points throughout `AirodumpScanner`.

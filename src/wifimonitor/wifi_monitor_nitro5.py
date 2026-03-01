@@ -25,7 +25,6 @@ if sys.version_info < MIN_PYTHON:
 
 import argparse
 import atexit
-import csv
 import io
 from datetime import datetime
 import glob
@@ -33,20 +32,19 @@ import logging
 import os
 import re
 import signal
-import stat
 import subprocess
 import time
 
 from rich.console import Console, Group
 from rich.live import Live
-from rich.markup import escape
 from rich.table import Table
 
 from wifimonitor.wifi_common import (
-    Network, KnownNetwork, RogueAlert, DeauthEvent, DeauthSummary,
+    Network, KnownNetwork,
+    RogueAlert,  # noqa: F401 — backward-compat re-export
+    DeauthEvent,  # noqa: F401 — backward-compat re-export
+    DeauthSummary,  # noqa: F401 — backward-compat re-export
     parse_airodump_csv,
-    signal_to_bars, signal_color, security_color,
-    COLOR_TO_RICH,
     CommandRunner, SubprocessRunner,
     _minimal_env,
 )
@@ -68,97 +66,14 @@ AIRODUMP_STARTUP_WAIT = 6  # wait for first CSV write (airodump --write-interval
 _DEFAULT_RUNNER = SubprocessRunner()
 
 
-def _rich_color(rgb: tuple) -> str:
-    """Convert an RGB tuple to a Rich color name."""
-    return COLOR_TO_RICH.get(rgb, "white")
-
-
 # ---------------------------------------------------------------------------
-# Credentials file
+# Credentials & nmcli connection (canonical: credentials.py)
 # ---------------------------------------------------------------------------
 
-def load_credentials(filepath: str) -> dict[str, str]:
-    """Load SSID/passphrase pairs from a CSV file.
-
-    File format: one ``ssid,passphrase`` per line.  Lines starting with
-    ``#`` are comments.  Blank lines are ignored.  Fields may be quoted
-    to include commas.  Returns an empty dict if the file is missing or
-    unreadable.
-
-    Warns to stderr if the file is world-readable (permissions concern).
-    """
-    creds: dict[str, str] = {}
-
-    if not os.path.isfile(filepath):
-        return creds
-
-    # Check file permissions — warn if world-readable
-    try:
-        file_stat = os.stat(filepath)
-        if file_stat.st_mode & stat.S_IROTH:
-            print(
-                f"WARNING: credentials file '{filepath}' is world-readable. "
-                "Consider restricting permissions to 600.",
-                file=sys.stderr,
-            )
-    except OSError:
-        pass
-
-    try:
-        with open(filepath, newline="") as f:
-            reader = csv.reader(f)
-            for row in reader:
-                # Skip blank or comment lines
-                if not row or row[0].strip().startswith("#"):
-                    continue
-                if len(row) < 2:
-                    continue
-                ssid = row[0].strip()
-                passphrase = row[1].strip()
-                creds[ssid] = passphrase
-    except OSError:
-        return creds
-
-    return creds
-
-
-# ---------------------------------------------------------------------------
-# nmcli connection
-# ---------------------------------------------------------------------------
-
-def connect_wifi_nmcli(
-    ssid: str,
-    passphrase: str,
-    interface: str | None = None,
-    *,
-    runner: CommandRunner | None = None,
-) -> bool:
-    """Connect to a WiFi network using nmcli.
-
-    Args:
-        ssid: The network SSID to connect to.
-        passphrase: The network passphrase (empty string for open networks).
-        interface: Optional wireless interface name.
-        runner: Optional CommandRunner for subprocess calls (testing seam).
-
-    Returns:
-        True if the connection succeeded, False otherwise.
-    """
-    runner = runner or _DEFAULT_RUNNER
-    env = _minimal_env()
-    cmd = ["nmcli", "device", "wifi", "connect", ssid]
-
-    if passphrase:
-        cmd += ["password", passphrase]
-
-    if interface:
-        cmd += ["ifname", interface]
-
-    try:
-        result = runner.run(cmd, capture_output=True, text=True, timeout=30, env=env)
-        return result.returncode == 0
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        return False
+from wifimonitor.credentials import (  # noqa: E402
+    load_credentials,  # noqa: F401 — backward-compat re-export
+    connect_wifi_nmcli,  # noqa: F401 — backward-compat re-export
+)
 
 
 # ---------------------------------------------------------------------------
@@ -835,235 +750,18 @@ from wifimonitor.scanning.nmcli import (  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
-# Rich TUI rendering
+# Rich TUI rendering (canonical: display/tables.py)
 # ---------------------------------------------------------------------------
 
-def _bar_string(bars: int) -> str:
-    """Build a signal-bar string like '▂▄▆█'."""
-    chars = ["▂", "▄", "▆", "█"]
-    return "".join(chars[i] if i < bars else " " for i in range(4))
-
-
-def build_table(
-    networks: list[Network],
-    credentials: dict[str, str] | None = None,
-    caption_override: str | None = None,
-    connected_bssid: str | None = None,
-) -> Table:
-    """Build a Rich Table displaying the scanned networks.
-
-    Args:
-        networks: List of scanned networks (already sorted by signal).
-        credentials: Optional dict of SSID -> passphrase.  When provided,
-            a "Key" column is added showing which networks have known
-            passphrases.
-        caption_override: Optional caption to use instead of default.
-        connected_bssid: Optional BSSID of the currently connected network.
-            When provided, the matching row is highlighted bold and shows a
-            filled-circle indicator in the "Con" column.  Empty string is
-            treated as None (not connected).
-    """
-    # Normalize: empty string or None both mean "not connected"
-    _connected = connected_bssid.lower() if connected_bssid else None
-
-    show_key = bool(credentials)
-    caption = caption_override if caption_override is not None else f"{len(networks)} networks found"
-    table = Table(
-        title="WiFi Monitor — Acer Nitro 5",
-        title_style="bold cyan",
-        caption=caption,
-        caption_style="grey50",
-        expand=True,
-        show_lines=False,
-        padding=(0, 1),
-    )
-    table.add_column("#", style="grey50", width=3, justify="right")
-    table.add_column("Con", justify="center", width=3)
-    table.add_column("SSID", style="white", min_width=15, max_width=30)
-    if show_key:
-        table.add_column("Key", justify="center", width=3)
-    table.add_column("BSSID", style="grey50", width=17)
-    table.add_column("Ch", justify="right", width=4)
-    table.add_column("dBm", justify="right", width=5)
-    table.add_column("Sig", width=5)
-    table.add_column("Cli", justify="right", width=4)
-    table.add_column("Security", width=8)
-
-    for i, net in enumerate(networks, 1):
-        is_connected = bool(_connected) and net.bssid == _connected
-        ssid = escape(net.ssid) if net.ssid else "[dim]<hidden>[/dim]"
-        sig_c = _rich_color(signal_color(net.signal))
-        sec_c = _rich_color(security_color(net.security))
-        bars = signal_to_bars(net.signal)
-        bar_str = _bar_string(bars)
-
-        row = [
-            str(i),
-            "[green]●[/green]" if is_connected else "",
-            ssid,
-        ]
-        if show_key:
-            has_key = (net.ssid in credentials) if (net.ssid and credentials) else False
-            row.append("[green]*[/green]" if has_key else "")
-        row.extend([
-            escape(net.bssid.upper()),
-            str(net.channel),
-            f"[{sig_c}]{net.signal}[/{sig_c}]",
-            f"[{sig_c}]{bar_str}[/{sig_c}]",
-            str(net.clients),
-            f"[{sec_c}]{net.security}[/{sec_c}]",
-        ])
-
-        table.add_row(*row, style="bold" if is_connected else "")
-
-    return table
-
-
-def build_dns_table(domains: list[tuple[str, int]]) -> Table:
-    """Build a Rich Table showing the top queried DNS domains.
-
-    Args:
-        domains: List of (domain, count) pairs, already sorted by count
-            descending (as returned by DnsTracker.top()).
-    """
-    table = Table(
-        title="DNS Queries (top domains)",
-        title_style="bold cyan",
-        caption=f"{len(domains)} domains tracked",
-        caption_style="grey50",
-        expand=True,
-        show_lines=False,
-        padding=(0, 1),
-    )
-    table.add_column("#", style="grey50", width=3, justify="right")
-    table.add_column("Domain", style="white", min_width=20, max_width=50)
-    table.add_column("Count", justify="right", width=6)
-
-    for i, (domain, count) in enumerate(domains, 1):
-        table.add_row(str(i), escape(domain), str(count))
-
-    return table
-
-
-def build_rogue_table(alerts: list[RogueAlert]) -> Table:
-    """Build a Rich Table showing rogue AP detection alerts.
-
-    Args:
-        alerts: List of :class:`RogueAlert` objects from :func:`detect_rogue_aps`.
-    """
-    table = Table(
-        title="Rogue AP Alerts",
-        title_style="bold red",
-        caption=f"{len(alerts)} alert(s)",
-        caption_style="grey50",
-        expand=True,
-        show_lines=False,
-        padding=(0, 1),
-    )
-    table.add_column("#", style="grey50", width=3, justify="right")
-    table.add_column("SSID", style="white", min_width=10, max_width=25)
-    table.add_column("BSSID", style="red", width=17)
-    table.add_column("Ch", justify="right", width=4)
-    table.add_column("Reason", style="yellow", min_width=10, max_width=20)
-    table.add_column("Expected BSSIDs", style="grey50", min_width=15, max_width=40)
-
-    for i, alert in enumerate(alerts, 1):
-        reason_display = alert.reason.replace("_", " ")
-        expected = ", ".join(b.upper() for b in alert.expected_bssids)
-        table.add_row(
-            str(i),
-            escape(alert.network.ssid),
-            escape(alert.network.bssid.upper()),
-            str(alert.network.channel),
-            reason_display,
-            expected,
-        )
-
-    return table
-
-
-def build_deauth_table(events: list[DeauthEvent]) -> Table:
-    """Build a Rich Table showing captured deauth/disassoc events.
-
-    Args:
-        events: List of :class:`DeauthEvent` objects, newest first.
-    """
-    table = Table(
-        title="Deauth/Disassoc Frames",
-        title_style="bold red",
-        caption=f"{len(events)} event(s)",
-        caption_style="grey50",
-        expand=True,
-        show_lines=False,
-        padding=(0, 1),
-    )
-    table.add_column("#", style="grey50", width=3, justify="right")
-    table.add_column("BSSID", style="red", width=17)
-    table.add_column("Source", style="yellow", width=17)
-    table.add_column("Destination", style="white", width=17)
-    table.add_column("Type", style="cyan", width=8)
-    table.add_column("Reason", style="grey50", min_width=10, max_width=40)
-
-    for i, evt in enumerate(events, 1):
-        table.add_row(
-            str(i),
-            escape(evt.bssid.upper()),
-            escape(evt.source.upper()),
-            escape(evt.destination.upper()),
-            evt.subtype,
-            escape(evt.reason),
-        )
-
-    return table
-
-
-def build_deauth_summary_table(summaries: list[DeauthSummary]) -> Table:
-    """Build a Rich Table showing severity-classified deauth summaries.
-
-    Rows are color-coded by severity:
-        - **normal** — default style
-        - **suspicious** — yellow
-        - **attack** — bold red
-
-    Args:
-        summaries: Aggregated summaries from :func:`classify_deauth_events`.
-    """
-    _SEVERITY_STYLE: dict[str, str] = {
-        "normal": "",
-        "suspicious": "yellow",
-        "attack": "bold red",
-    }
-
-    table = Table(
-        title="Deauth/Disassoc Summary",
-        title_style="bold red",
-        caption=f"{len(summaries)} BSSID(s)",
-        caption_style="grey50",
-        expand=True,
-        show_lines=False,
-        padding=(0, 1),
-    )
-    table.add_column("#", style="grey50", width=3, justify="right")
-    table.add_column("BSSID", width=17)
-    table.add_column("Frames", justify="right", width=7)
-    table.add_column("Broadcast", justify="right", width=10)
-    table.add_column("Targets", justify="right", width=8)
-    table.add_column("Severity", width=12)
-
-    for i, s in enumerate(summaries, 1):
-        row_style = _SEVERITY_STYLE.get(s.severity, "")
-        sev_label = s.severity.upper()
-        table.add_row(
-            str(i),
-            escape(s.bssid.upper()),
-            str(s.total_count),
-            str(s.broadcast_count),
-            str(s.unique_targets),
-            sev_label,
-            style=row_style,
-        )
-
-    return table
+from wifimonitor.display.tables import (  # noqa: E402
+    _rich_color,  # noqa: F401 — backward-compat re-export
+    _bar_string,  # noqa: F401 — backward-compat re-export
+    build_table,  # noqa: F401 — backward-compat re-export
+    build_dns_table,  # noqa: F401 — backward-compat re-export
+    build_rogue_table,  # noqa: F401 — backward-compat re-export
+    build_deauth_table,  # noqa: F401 — backward-compat re-export
+    build_deauth_summary_table,  # noqa: F401 — backward-compat re-export
+)
 
 
 # ---------------------------------------------------------------------------
