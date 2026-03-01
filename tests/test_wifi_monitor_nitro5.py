@@ -53,6 +53,8 @@ from wifimonitor.wifi_monitor_nitro5 import (
     _parse_arp_scan_output,
     _parse_nmap_output,
     _dump_startup_config,
+    _get_display_interfaces,
+    _select_next_network,
 )
 
 
@@ -2684,6 +2686,102 @@ class TestDumpStartupConfig:
             creds_count=3,
         )
         # If we reach here without raising, all log lines were executed
+
+
+# ---------------------------------------------------------------------------
+# _get_display_interfaces
+# ---------------------------------------------------------------------------
+
+
+class TestGetDisplayInterfaces:
+    """_get_display_interfaces returns interface label for display."""
+
+    def test_monitor_mode_uses_airodump_interface(self):
+        args = argparse.Namespace(interface="wlan0")
+        mock_airodump = MagicMock(spec=AirodumpScanner)
+        mock_airodump.interface = "wlan0mon"
+        assert _get_display_interfaces(args, mock_airodump) == "Interface: wlan0mon"
+
+    def test_nmcli_mode_with_interface(self):
+        args = argparse.Namespace(interface="wlan1")
+        assert _get_display_interfaces(args, None) == "Interface: wlan1"
+
+    def test_nmcli_mode_without_interface(self):
+        args = argparse.Namespace(interface=None)
+        assert _get_display_interfaces(args, None) == "Interface: all"
+
+
+# ---------------------------------------------------------------------------
+# _select_next_network
+# ---------------------------------------------------------------------------
+
+
+class TestSelectNextNetwork:
+    """_select_next_network selects next network by priority and cycles."""
+
+    def test_prioritizes_credentials_over_open(self):
+        """Networks with credentials come before open networks."""
+        creds = {"Secure": "pass"}
+        nets = [
+            Network("aa:01", "OpenNet", 6, -50, "Open"),
+            Network("aa:02", "Secure", 11, -70, "WPA2"),
+        ]
+        result = _select_next_network(nets, creds, None)
+        assert result is not None
+        assert result.ssid == "Secure"
+
+    def test_open_networks_when_no_credentials(self):
+        """Open networks selected when credentials dict is empty/None."""
+        nets = [
+            Network("aa:01", "OpenNet", 6, -50, "Open"),
+            Network("aa:02", "Secure", 11, -70, "WPA2"),
+        ]
+        result = _select_next_network(nets, None, None)
+        assert result is not None
+        assert result.ssid == "OpenNet"
+
+    def test_cycles_to_first_when_connected_to_last(self):
+        """Pressing 'n' when on last network wraps to first."""
+        creds = {"A": "a", "B": "b"}
+        nets = [
+            Network("aa:01", "A", 6, -45, "WPA2"),
+            Network("aa:02", "B", 11, -65, "WPA2"),
+        ]
+        result = _select_next_network(nets, creds, "aa:02")
+        assert result is not None
+        assert result.ssid == "A"
+
+    def test_excludes_current_network(self):
+        """Currently connected network is skipped."""
+        creds = {"A": "a", "B": "b"}
+        nets = [
+            Network("aa:01", "A", 6, -45, "WPA2"),
+            Network("aa:02", "B", 11, -65, "WPA2"),
+        ]
+        result = _select_next_network(nets, creds, "aa:01")
+        assert result is not None
+        assert result.ssid == "B"
+
+    def test_returns_none_when_empty(self):
+        assert _select_next_network([], None, None) is None
+
+    def test_skips_hidden_networks(self):
+        """Networks with empty SSID are not selectable."""
+        nets = [
+            Network("aa:01", "", 6, -50, "WPA2"),
+        ]
+        assert _select_next_network(nets, {}, None) is None
+
+    def test_orders_by_signal_within_group(self):
+        """Within credentials or open group, stronger signal first."""
+        creds = {"Weak": "w", "Strong": "s"}
+        nets = [
+            Network("aa:01", "Weak", 6, -80, "WPA2"),
+            Network("aa:02", "Strong", 11, -55, "WPA2"),
+        ]
+        result = _select_next_network(nets, creds, None)
+        assert result is not None
+        assert result.ssid == "Strong"
 
 
 # ---------------------------------------------------------------------------

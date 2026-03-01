@@ -26,7 +26,10 @@ if sys.version_info < MIN_PYTHON:
 import argparse
 import atexit
 import logging
+import select
+import termios
 import time
+import tty
 
 from rich.console import Console, Group
 from rich.live import Live
@@ -153,6 +156,7 @@ from wifimonitor.scanning.nmcli import (  # noqa: E402
 from wifimonitor.display.tables import (  # noqa: E402
     _rich_color,  # noqa: F401 — backward-compat re-export
     _bar_string,  # noqa: F401 — backward-compat re-export
+    build_interface_header,  # noqa: F401 — backward-compat re-export
     build_table,  # noqa: F401 — backward-compat re-export
     build_dns_table,  # noqa: F401 — backward-compat re-export
     build_rogue_table,  # noqa: F401 — backward-compat re-export
@@ -268,6 +272,90 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="save current scan results as a known-good baseline and exit",
     )
     return parser.parse_args(argv)
+
+
+def _get_display_interfaces(
+    args: argparse.Namespace,
+    airodump_scanner: AirodumpScanner | None,
+) -> str:
+    """Return a concise label for the interface(s) used for scanning.
+
+    Args:
+        args: Parsed CLI args (interface may be set or None).
+        airodump_scanner: Active airodump scanner if monitor mode, else None.
+
+    Returns:
+        Label such as "Interface: wlan0" or "Interface: all".
+    """
+    if airodump_scanner is not None:
+        return f"Interface: {airodump_scanner.interface}"
+    if args.interface:
+        return f"Interface: {args.interface}"
+    return "Interface: all"
+
+
+def _select_next_network(
+    networks: list[Network],
+    credentials: dict[str, str] | None,
+    connected_bssid: str | None,
+) -> Network | None:
+    """Select the next available network to connect to.
+
+    Order: (1) networks with credentials by signal descending, (2) open
+    networks by signal descending. Excludes the currently connected network.
+    "Next" = the network after current in this list, wrapping to first if
+    at end or not connected.
+
+    Args:
+        networks: Scanned networks (any order).
+        credentials: SSID -> passphrase dict, or None.
+        connected_bssid: BSSID of currently connected network, or None.
+
+    Returns:
+        The next network to connect to, or None if none available.
+    """
+    _connected = connected_bssid.lower() if connected_bssid else None
+    with_creds: list[Network] = []
+    open_nets: list[Network] = []
+    for net in networks:
+        if not net.ssid:
+            continue
+        if credentials and net.ssid in credentials:
+            with_creds.append(net)
+        elif net.security == "Open":
+            open_nets.append(net)
+    with_creds.sort(key=lambda n: n.signal, reverse=True)
+    open_nets.sort(key=lambda n: n.signal, reverse=True)
+    ordered = with_creds + open_nets
+    if not ordered:
+        return None
+    current_idx = -1
+    for i, net in enumerate(ordered):
+        if _connected and net.bssid == _connected:
+            current_idx = i
+            break
+    next_idx = (current_idx + 1) % len(ordered)
+    return ordered[next_idx]
+
+
+def _wait_for_scan_interval_or_key(timeout_secs: float, fd: int) -> str | None:
+    """Wait up to timeout_secs, returning the key pressed if any, else None.
+
+    Uses select for non-blocking stdin check. Caller must have put fd
+    in cbreak mode and must restore terminal settings on exit.
+    """
+    elapsed = 0.0
+    interval = 0.25
+    while elapsed < timeout_secs:
+        r, _, _ = select.select([fd], [], [], min(interval, timeout_secs - elapsed))
+        if r:
+            try:
+                key = sys.stdin.read(1)
+                return key if key else None
+            except (EOFError, OSError):
+                return None
+        elapsed += interval
+    return None
 
 
 def _dump_startup_config(
@@ -571,13 +659,17 @@ def main() -> None:
                 if dns_tracker is not None:
                     tables.append(build_dns_table(dns_tracker.top()))
 
-                live.update(Group(*tables) if len(tables) > 1 else tables[0])
+                interface_header = build_interface_header(
+                    _get_display_interfaces(args, airodump_scanner)
+                )
+                content = Group(*tables) if len(tables) > 1 else tables[0]
+                live.update(Group(interface_header, content))
 
                 # Auto-connect on first scan if requested
                 # When monitor mode is active, the scan interface is in monitor mode
                 # and cannot connect; use interface=None so nmcli picks a managed one.
+                connect_iface = None if airodump_scanner else args.interface
                 if args.connect and credentials and not connected:
-                    connect_iface = None if airodump_scanner else args.interface
                     for net in networks:
                         if net.ssid and net.ssid in credentials:
                             ok = connect_wifi_nmcli(
@@ -589,7 +681,35 @@ def main() -> None:
                                 connected = True
                             break
 
-                time.sleep(SCAN_INTERVAL)
+                # Wait for scan interval, or keypress (e.g. 'n' to connect to next)
+                if sys.stdin.isatty():
+                    try:
+                        fd = sys.stdin.fileno()
+                        old_attrs = termios.tcgetattr(fd)
+                        try:
+                            tty.setcbreak(fd)
+                            key = _wait_for_scan_interval_or_key(SCAN_INTERVAL, fd)
+                            if key and key.lower() == "n":
+                                next_net = _select_next_network(
+                                    networks,
+                                    credentials,
+                                    connected_bssid,
+                                )
+                                if next_net:
+                                    passphrase = (credentials or {}).get(
+                                        next_net.ssid, ""
+                                    )
+                                    connect_wifi_nmcli(
+                                        next_net.ssid,
+                                        passphrase,
+                                        interface=connect_iface,
+                                    )
+                        finally:
+                            termios.tcsetattr(fd, termios.TCSADRAIN, old_attrs)
+                    except (termios.error, OSError):
+                        time.sleep(SCAN_INTERVAL)
+                else:
+                    time.sleep(SCAN_INTERVAL)
     except KeyboardInterrupt:
         if deauth_tracker is not None:
             deauth_tracker.stop()

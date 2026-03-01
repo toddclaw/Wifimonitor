@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from rich.markup import escape
 from rich.table import Table
+from rich.text import Text
 
 from wifimonitor.wifi_common import (
     COLOR_TO_RICH,
@@ -37,6 +38,18 @@ def _bar_string(bars: int) -> str:
     """Build a signal-bar string like '▂▄▆█'."""
     chars = ["▂", "▄", "▆", "█"]
     return "".join(chars[i] if i < bars else " " for i in range(4))
+
+
+def build_interface_header(interface_label: str) -> Text:
+    """Build a Rich Text header showing the WiFi interface(s) in use.
+
+    Args:
+        interface_label: Label such as "Interface: wlan0" or "Interface: all".
+
+    Returns:
+        A Rich Text object styled for display at the top of the TUI.
+    """
+    return Text(interface_label, style="bold cyan")
 
 
 # ---------------------------------------------------------------------------

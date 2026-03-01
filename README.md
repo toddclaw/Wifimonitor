@@ -62,6 +62,11 @@ sudo wifimonitor
 
 Press `Ctrl+C` to exit cleanly.
 
+**Display:** The currently used WiFi interface (e.g. `wlan0` or `all`) is shown at the top left of the display.
+
+**Keyboard shortcuts:**
+- **`n`** — Connect to the next available network. Prioritizes networks with credentials, then open networks. Cycles through options by signal strength.
+
 If `wifimonitor` is not on your `PATH`, run the module form instead:
 
 ```bash

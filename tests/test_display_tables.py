@@ -8,12 +8,15 @@ from __future__ import annotations
 
 from rich.table import Table
 
+from rich.text import Text
+
 from wifimonitor.display.tables import (
     _bar_string,
     _rich_color,
     build_deauth_summary_table,
     build_deauth_table,
     build_dns_table,
+    build_interface_header,
     build_rogue_table,
     build_table,
 )
@@ -23,6 +26,28 @@ from wifimonitor.wifi_common import (
     Network,
     RogueAlert,
 )
+
+
+# ---------------------------------------------------------------------------
+# build_interface_header
+# ---------------------------------------------------------------------------
+
+
+class TestBuildInterfaceHeader:
+    """build_interface_header creates Rich Text for interface display."""
+
+    def test_returns_text_with_label(self):
+        result = build_interface_header("Interface: wlan0")
+        assert isinstance(result, Text)
+        assert result.plain == "Interface: wlan0"
+
+    def test_returns_text_with_all(self):
+        result = build_interface_header("Interface: all")
+        assert result.plain == "Interface: all"
+
+    def test_has_styling(self):
+        result = build_interface_header("Interface: wlan0")
+        assert result.style is not None
 
 
 # ---------------------------------------------------------------------------
