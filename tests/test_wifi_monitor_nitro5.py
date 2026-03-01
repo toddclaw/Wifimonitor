@@ -12,7 +12,10 @@ from __future__ import annotations
 
 import argparse
 import io as _io
+import logging
 import subprocess
+import tempfile
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -55,6 +58,8 @@ from wifimonitor.wifi_monitor_nitro5 import (
     _dump_startup_config,
     _get_display_interfaces,
     _select_next_network,
+    _setup_log_file,
+    LOG_FILENAME,
 )
 
 
@@ -2782,6 +2787,34 @@ class TestSelectNextNetwork:
         result = _select_next_network(nets, creds, None)
         assert result is not None
         assert result.ssid == "Strong"
+
+
+# ---------------------------------------------------------------------------
+# _setup_log_file
+# ---------------------------------------------------------------------------
+
+
+class TestSetupLogFile:
+    """_setup_log_file creates wifimonitor.log with session banner."""
+
+    def test_creates_log_file_with_session_banner(self):
+        """_setup_log_file writes session banner to wifimonitor.log in cwd."""
+        root = logging.getLogger()
+        initial_handlers = list(root.handlers)
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                with patch("os.getcwd", return_value=tmpdir):
+                    _setup_log_file(debug=False)
+                log_path = Path(tmpdir) / LOG_FILENAME
+                assert log_path.exists()
+                content = log_path.read_text()
+                assert "=== WiFi Monitor session started" in content
+                assert "===" in content
+        finally:
+            for h in root.handlers:
+                if h not in initial_handlers:
+                    root.removeHandler(h)
+                    h.close()
 
 
 # ---------------------------------------------------------------------------

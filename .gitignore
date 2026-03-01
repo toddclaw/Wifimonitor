@@ -3,3 +3,4 @@ __pycache__/
 .pytest_cache/
 .coverage
 creds.csv
+wifimonitor.log

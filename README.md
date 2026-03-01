@@ -62,7 +62,9 @@ sudo wifimonitor
 
 Press `Ctrl+C` to exit cleanly.
 
-**Display:** The currently used WiFi interface (e.g. `wlan0` or `all`) is shown at the top left of the display.
+**Display:** The currently used WiFi interface (e.g. `wlan0` or `all`) is shown at the top left. The main network scan table appears on the left; auxiliary tables (rogue alerts, deauth events, DNS queries) appear in a column on the right when those features are enabled.
+
+**Log file:** All log and debug output is written to `wifimonitor.log` in the current directory. Each run appends a session banner with a timestamp.
 
 **Keyboard shortcuts:**
 - **`n`** — Connect to the next available network. Prioritizes networks with credentials, then open networks. Cycles through options by signal strength.
@@ -101,7 +103,7 @@ The tool will warn to stderr if the file is world-readable.
 
 ## DNS Query Capture
 
-The `--dns` flag enables real-time DNS query capture using `tcpdump`. A second table appears below the network list, ranking queried domain names by frequency in a "top" style display.
+The `--dns` flag enables real-time DNS query capture using `tcpdump`. A table appears in the right column, ranking queried domain names by frequency in a "top" style display.
 
 ```bash
 # Start with DNS capture (requires root for tcpdump)

@@ -26,11 +26,14 @@ if sys.version_info < MIN_PYTHON:
 import argparse
 import atexit
 import logging
+import os
 import select
 import termios
 import time
 import tty
+from datetime import datetime
 
+from rich.columns import Columns
 from rich.console import Console, Group
 from rich.live import Live
 from rich.table import Table
@@ -52,6 +55,7 @@ from wifimonitor.platform_detect import (
 
 # -- Defaults --
 SCAN_INTERVAL = 10  # seconds between refreshes
+LOG_FILENAME = "wifimonitor.log"
 _LOGGER = logging.getLogger("wifi_monitor_nitro5")
 _DEFAULT_RUNNER = SubprocessRunner()
 
@@ -358,6 +362,45 @@ def _wait_for_scan_interval_or_key(timeout_secs: float, fd: int) -> str | None:
     return None
 
 
+def _setup_log_file(debug: bool) -> None:
+    """Configure logging to wifimonitor.log in the current directory.
+
+    Writes a session banner with timestamp at startup. All log output
+    (and debug when --debug) goes to the file. When --debug, also
+    logs to stderr.
+
+    Args:
+        debug: If True, set level to DEBUG and add stderr handler.
+    """
+    log_path = os.path.join(os.getcwd(), LOG_FILENAME)
+    log_format = "%(asctime)s %(name)s: %(levelname)s: %(message)s"
+    formatter = logging.Formatter(log_format, datefmt="%Y-%m-%d %H:%M:%S")
+    try:
+        with open(log_path, "a", encoding="utf-8") as f:
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            f.write(f"\n=== WiFi Monitor session started {timestamp} ===\n")
+        file_handler = logging.FileHandler(log_path, mode="a", encoding="utf-8")
+        file_handler.setFormatter(formatter)
+        file_handler.setLevel(logging.DEBUG if debug else logging.INFO)
+        root = logging.getLogger()
+        root.addHandler(file_handler)
+        root.setLevel(logging.DEBUG if debug else logging.INFO)
+        if debug:
+            stderr_handler = logging.StreamHandler(sys.stderr)
+            stderr_handler.setFormatter(logging.Formatter(
+                "%(name)s: %(levelname)s: %(message)s"
+            ))
+            stderr_handler.setLevel(logging.DEBUG)
+            root.addHandler(stderr_handler)
+        logging.getLogger("wifi_common").setLevel(logging.DEBUG if debug else logging.INFO)
+        logging.getLogger("wifimonitor").setLevel(logging.DEBUG if debug else logging.INFO)
+    except OSError:
+        print(
+            f"WARNING: Could not create log file {log_path} — continuing without file logging",
+            file=sys.stderr,
+        )
+
+
 def _dump_startup_config(
     *,
     args: argparse.Namespace,
@@ -416,24 +459,7 @@ def main() -> None:
     clean when the user exits.
     """
     args = _parse_args()
-    if args.debug:
-        log_format = "%(name)s: %(levelname)s: %(message)s"
-        logging.basicConfig(
-            level=logging.DEBUG,
-            format=log_format,
-            stream=sys.stderr,
-        )
-        logging.getLogger("wifi_common").setLevel(logging.DEBUG)
-        logging.getLogger("wifi_monitor_nitro5").setLevel(logging.DEBUG)
-        try:
-            file_handler = logging.FileHandler(
-                AIRODUMP_DEBUG_LOG, mode="a", encoding="utf-8"
-            )
-            file_handler.setLevel(logging.DEBUG)
-            file_handler.setFormatter(logging.Formatter(log_format))
-            logging.getLogger().addHandler(file_handler)
-        except OSError:
-            pass  # Debug log file optional; stderr still works
+    _setup_log_file(debug=args.debug)
     console = Console()
 
     # --list-devices: print detected WiFi interfaces and exit
@@ -638,31 +664,40 @@ def main() -> None:
                     connected_bssid=connected_bssid,
                 )
 
-                tables: list[Table] = [network_table]
-
+                right_tables: list[Table] = []
                 if baseline:
                     rogue_alerts = detect_rogue_aps(networks, baseline)
                     if rogue_alerts:
-                        tables.append(build_rogue_table(rogue_alerts))
+                        right_tables.append(build_rogue_table(rogue_alerts))
 
                 if deauth_tracker is not None:
                     deauth_events = deauth_tracker.events()
                     if deauth_events:
-                        tables.append(build_deauth_table(deauth_events))
+                        right_tables.append(build_deauth_table(deauth_events))
                         summaries = classify_deauth_events(
                             deauth_events,
                             baseline=baseline or None,
                         )
                         if summaries:
-                            tables.append(build_deauth_summary_table(summaries))
+                            right_tables.append(
+                                build_deauth_summary_table(summaries)
+                            )
 
                 if dns_tracker is not None:
-                    tables.append(build_dns_table(dns_tracker.top()))
+                    right_tables.append(build_dns_table(dns_tracker.top()))
 
                 interface_header = build_interface_header(
                     _get_display_interfaces(args, airodump_scanner)
                 )
-                content = Group(*tables) if len(tables) > 1 else tables[0]
+                content: Table | Columns
+                if right_tables:
+                    content = Columns(
+                        [network_table, Group(*right_tables)],
+                        expand=True,
+                        padding=(0, 2),
+                    )
+                else:
+                    content = network_table
                 live.update(Group(interface_header, content))
 
                 # Auto-connect on first scan if requested
