@@ -538,75 +538,86 @@ class TestMinimalEnv:
 # ---------------------------------------------------------------------------
 
 class TestLoadCredentials:
-    """load_credentials parses a CSV file of ssid,passphrase pairs."""
+    """load_credentials parses a CSV file of ssid,passphrase and BSSID,SSID,passphrase pairs."""
 
     def test_load_credentials_happy_path(self, tmp_path):
         creds_file = tmp_path / "creds.csv"
         creds_file.write_text("HomeNetwork,secretpass\nCoffeeShop,cafe2024\n")
-        result = load_credentials(str(creds_file))
-        assert result == {"HomeNetwork": "secretpass", "CoffeeShop": "cafe2024"}
+        by_ssid, by_bssid = load_credentials(str(creds_file))
+        assert by_ssid == {"HomeNetwork": "secretpass", "CoffeeShop": "cafe2024"}
+        assert by_bssid == {}
 
     def test_load_credentials_skips_comment_lines(self, tmp_path):
         creds_file = tmp_path / "creds.csv"
         creds_file.write_text("# This is a comment\nMyNet,pass123\n")
-        result = load_credentials(str(creds_file))
-        assert result == {"MyNet": "pass123"}
+        by_ssid, by_bssid = load_credentials(str(creds_file))
+        assert by_ssid == {"MyNet": "pass123"}
+        assert by_bssid == {}
 
     def test_load_credentials_skips_blank_lines(self, tmp_path):
         creds_file = tmp_path / "creds.csv"
         creds_file.write_text("\nMyNet,pass123\n\n\n")
-        result = load_credentials(str(creds_file))
-        assert result == {"MyNet": "pass123"}
+        by_ssid, by_bssid = load_credentials(str(creds_file))
+        assert by_ssid == {"MyNet": "pass123"}
+        assert by_bssid == {}
 
-    def test_load_credentials_empty_file_returns_empty_dict(self, tmp_path):
+    def test_load_credentials_empty_file_returns_empty(self, tmp_path):
         creds_file = tmp_path / "creds.csv"
         creds_file.write_text("")
-        result = load_credentials(str(creds_file))
-        assert result == {}
+        by_ssid, by_bssid = load_credentials(str(creds_file))
+        assert by_ssid == {}
+        assert by_bssid == {}
 
-    def test_load_credentials_missing_file_returns_empty_dict(self, tmp_path):
-        result = load_credentials(str(tmp_path / "nonexistent.csv"))
-        assert result == {}
+    def test_load_credentials_missing_file_returns_empty(self, tmp_path):
+        by_ssid, by_bssid = load_credentials(str(tmp_path / "nonexistent.csv"))
+        assert by_ssid == {}
+        assert by_bssid == {}
 
     def test_load_credentials_quoted_fields_with_commas(self, tmp_path):
         """SSIDs or passphrases containing commas must be quoted in CSV."""
         creds_file = tmp_path / "creds.csv"
         creds_file.write_text('"My,Network","pass,word"\n')
-        result = load_credentials(str(creds_file))
-        assert result == {"My,Network": "pass,word"}
+        by_ssid, by_bssid = load_credentials(str(creds_file))
+        assert by_ssid == {"My,Network": "pass,word"}
+        assert by_bssid == {}
 
     def test_load_credentials_malformed_line_too_few_fields_skipped(self, tmp_path):
         creds_file = tmp_path / "creds.csv"
         creds_file.write_text("OnlySSID\nGoodNet,goodpass\n")
-        result = load_credentials(str(creds_file))
-        assert result == {"GoodNet": "goodpass"}
+        by_ssid, by_bssid = load_credentials(str(creds_file))
+        assert by_ssid == {"GoodNet": "goodpass"}
+        assert by_bssid == {}
 
     def test_load_credentials_extra_fields_ignored(self, tmp_path):
         creds_file = tmp_path / "creds.csv"
         creds_file.write_text("MyNet,pass123,extra,fields\n")
-        result = load_credentials(str(creds_file))
-        assert result == {"MyNet": "pass123"}
+        by_ssid, by_bssid = load_credentials(str(creds_file))
+        assert by_ssid == {"MyNet": "pass123"}
+        assert by_bssid == {}
 
     def test_load_credentials_strips_whitespace_from_ssid_and_pass(self, tmp_path):
         creds_file = tmp_path / "creds.csv"
         creds_file.write_text("  MyNet  ,  pass123  \n")
-        result = load_credentials(str(creds_file))
-        assert result == {"MyNet": "pass123"}
+        by_ssid, by_bssid = load_credentials(str(creds_file))
+        assert by_ssid == {"MyNet": "pass123"}
+        assert by_bssid == {}
 
     def test_load_credentials_empty_passphrase_stored(self, tmp_path):
         """Open networks can have empty passphrases."""
         creds_file = tmp_path / "creds.csv"
         creds_file.write_text("OpenNet,\n")
-        result = load_credentials(str(creds_file))
-        assert result == {"OpenNet": ""}
+        by_ssid, by_bssid = load_credentials(str(creds_file))
+        assert by_ssid == {"OpenNet": ""}
+        assert by_bssid == {}
 
     def test_load_credentials_warns_world_readable(self, tmp_path, capsys):
         """Should warn (not fail) if file is world-readable."""
         creds_file = tmp_path / "creds.csv"
         creds_file.write_text("MyNet,pass123\n")
         creds_file.chmod(0o644)
-        result = load_credentials(str(creds_file))
-        assert result == {"MyNet": "pass123"}
+        by_ssid, by_bssid = load_credentials(str(creds_file))
+        assert by_ssid == {"MyNet": "pass123"}
+        assert by_bssid == {}
         captured = capsys.readouterr()
         assert "world-readable" in captured.err.lower() or "permissions" in captured.err.lower()
 
@@ -615,8 +626,9 @@ class TestLoadCredentials:
         creds_file = tmp_path / "creds.csv"
         creds_file.write_text("MyNet,pass123\n")
         creds_file.chmod(0o600)
-        result = load_credentials(str(creds_file))
-        assert result == {"MyNet": "pass123"}
+        by_ssid, by_bssid = load_credentials(str(creds_file))
+        assert by_ssid == {"MyNet": "pass123"}
+        assert by_bssid == {}
         captured = capsys.readouterr()
         assert "world-readable" not in captured.err.lower()
 
@@ -2577,16 +2589,18 @@ class TestLoadCredentialsErrorPaths:
         creds_file.write_text("Home,pass123\n")
         with patch("wifimonitor.credentials.os.stat", side_effect=OSError("no stat")), \
             patch("wifimonitor.credentials.os.path.isfile", return_value=True):
-            result = load_credentials(str(creds_file))
-        assert result == {"Home": "pass123"}
+            by_ssid, by_bssid = load_credentials(str(creds_file))
+        assert by_ssid == {"Home": "pass123"}
+        assert by_bssid == {}
 
-    def test_open_oserror_returns_empty_dict(self, tmp_path):
-        """When open() raises OSError, load_credentials returns empty dict."""
+    def test_open_oserror_returns_empty(self, tmp_path):
+        """When open() raises OSError, load_credentials returns empty dicts."""
         creds_file = tmp_path / "creds.csv"
         creds_file.write_text("Home,pass123\n")
         with patch("builtins.open", side_effect=OSError("permission denied")):
-            result = load_credentials(str(creds_file))
-        assert result == {}
+            by_ssid, by_bssid = load_credentials(str(creds_file))
+        assert by_ssid == {}
+        assert by_bssid == {}
 
     def test_blank_line_in_nmcli_output_skipped(self):
         """parse_nmcli_output skips blank lines in the middle of output."""
@@ -2731,7 +2745,7 @@ class TestSelectNextNetwork:
             Network("aa:01", "OpenNet", 6, -50, "Open"),
             Network("aa:02", "Secure", 11, -70, "WPA2"),
         ]
-        result = _select_next_network(nets, creds, None)
+        result = _select_next_network(nets, creds, None, None)
         assert result is not None
         assert result.ssid == "Secure"
 
@@ -2741,7 +2755,7 @@ class TestSelectNextNetwork:
             Network("aa:01", "OpenNet", 6, -50, "Open"),
             Network("aa:02", "Secure", 11, -70, "WPA2"),
         ]
-        result = _select_next_network(nets, None, None)
+        result = _select_next_network(nets, None, None, None)
         assert result is not None
         assert result.ssid == "OpenNet"
 
@@ -2752,7 +2766,7 @@ class TestSelectNextNetwork:
             Network("aa:01", "A", 6, -45, "WPA2"),
             Network("aa:02", "B", 11, -65, "WPA2"),
         ]
-        result = _select_next_network(nets, creds, "aa:02")
+        result = _select_next_network(nets, creds, None, "aa:02")
         assert result is not None
         assert result.ssid == "A"
 
@@ -2763,19 +2777,30 @@ class TestSelectNextNetwork:
             Network("aa:01", "A", 6, -45, "WPA2"),
             Network("aa:02", "B", 11, -65, "WPA2"),
         ]
-        result = _select_next_network(nets, creds, "aa:01")
+        result = _select_next_network(nets, creds, None, "aa:01")
         assert result is not None
         assert result.ssid == "B"
 
     def test_returns_none_when_empty(self):
-        assert _select_next_network([], None, None) is None
+        assert _select_next_network([], None, None, None) is None
 
-    def test_skips_hidden_networks(self):
-        """Networks with empty SSID are not selectable."""
+    def test_skips_hidden_networks_without_bssid_creds(self):
+        """Hidden networks without BSSID credentials are not selectable."""
         nets = [
             Network("aa:01", "", 6, -50, "WPA2"),
         ]
-        assert _select_next_network(nets, {}, None) is None
+        assert _select_next_network(nets, {}, None, None) is None
+
+    def test_includes_open_hidden_networks_with_bssid_creds(self):
+        """Open hidden networks with BSSID credentials are selectable."""
+        creds_by_bssid = {"aa:bb:cc:dd:ee:ff": ("MyHidden", "")}
+        nets = [
+            Network("aa:bb:cc:dd:ee:ff", "", 6, -50, "Open"),
+        ]
+        result = _select_next_network(nets, None, creds_by_bssid, None)
+        assert result is not None
+        assert result.bssid == "aa:bb:cc:dd:ee:ff"
+        assert result.ssid == ""
 
     def test_orders_by_signal_within_group(self):
         """Within credentials or open group, stronger signal first."""
@@ -2784,7 +2809,7 @@ class TestSelectNextNetwork:
             Network("aa:01", "Weak", 6, -80, "WPA2"),
             Network("aa:02", "Strong", 11, -55, "WPA2"),
         ]
-        result = _select_next_network(nets, creds, None)
+        result = _select_next_network(nets, creds, None, None)
         assert result is not None
         assert result.ssid == "Strong"
 
@@ -2895,7 +2920,7 @@ class TestMain:
             patch("wifimonitor.wifi_monitor_nitro5.list_wifi_interfaces", return_value=[]), \
             patch("wifimonitor.wifi_monitor_nitro5.Console"), \
             patch("wifimonitor.wifi_monitor_nitro5.Live"), \
-            patch("wifimonitor.wifi_monitor_nitro5.load_credentials", return_value={"HomeNet": "pass"}), \
+            patch("wifimonitor.wifi_monitor_nitro5.load_credentials", return_value=({"HomeNet": "pass"}, {})), \
             patch("wifimonitor.wifi_monitor_nitro5.scan_wifi_nmcli", return_value=self._nets()), \
             patch("wifimonitor.wifi_monitor_nitro5._get_connected_bssid", return_value=None), \
             patch("wifimonitor.wifi_monitor_nitro5.connect_wifi_nmcli", return_value=True), \
@@ -2911,7 +2936,7 @@ class TestMain:
             patch("wifimonitor.wifi_monitor_nitro5.list_wifi_interfaces", return_value=[]), \
             patch("wifimonitor.wifi_monitor_nitro5.Console"), \
             patch("wifimonitor.wifi_monitor_nitro5.Live"), \
-            patch("wifimonitor.wifi_monitor_nitro5.load_credentials", return_value={}), \
+            patch("wifimonitor.wifi_monitor_nitro5.load_credentials", return_value=({}, {})), \
             patch("wifimonitor.wifi_monitor_nitro5.scan_wifi_nmcli", return_value=self._nets()), \
             patch("wifimonitor.wifi_monitor_nitro5._get_connected_bssid", return_value=None), \
             patch("wifimonitor.wifi_monitor_nitro5.time.sleep", side_effect=KeyboardInterrupt), \
@@ -2952,6 +2977,26 @@ class TestMain:
             mock_tracker.start.return_value = False
             mock_dns_cls.return_value = mock_tracker
             main()
+
+    def test_main_dns_reset_on_connected_bssid_change(self):
+        """main() calls DnsTracker.reset() when connected_bssid changes."""
+        from wifimonitor.wifi_monitor_nitro5 import main
+        with patch("wifimonitor.wifi_monitor_nitro5._parse_args", return_value=self._args(dns=True)), \
+            patch("wifimonitor.wifi_monitor_nitro5.list_wifi_interfaces", return_value=[]), \
+            patch("wifimonitor.wifi_monitor_nitro5.Console"), \
+            patch("wifimonitor.wifi_monitor_nitro5.Live"), \
+            patch("wifimonitor.wifi_monitor_nitro5.DnsTracker") as mock_dns_cls, \
+            patch("wifimonitor.wifi_monitor_nitro5.scan_wifi_nmcli", return_value=self._nets()), \
+            patch("wifimonitor.wifi_monitor_nitro5._get_connected_bssid", side_effect=[None, "aa:bb:cc:dd:ee:01"]), \
+            patch("wifimonitor.wifi_monitor_nitro5.sys.stdin.isatty", return_value=False), \
+            patch("wifimonitor.wifi_monitor_nitro5.time.sleep", side_effect=[None, KeyboardInterrupt]), \
+            patch("wifimonitor.wifi_monitor_nitro5.sys.exit"):
+            mock_tracker = MagicMock()
+            mock_tracker.start.return_value = True
+            mock_tracker.top.return_value = []
+            mock_dns_cls.return_value = mock_tracker
+            main()
+            mock_tracker.reset.assert_called_once()
 
     def test_main_debug_flag_sets_up_logging(self):
         """main() with --debug configures logging with FileHandler."""

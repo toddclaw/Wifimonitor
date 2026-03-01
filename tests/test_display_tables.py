@@ -6,8 +6,10 @@ the extracted module works independently of the monolith re-exports.
 
 from __future__ import annotations
 
-from rich.table import Table
+import io
 
+from rich.console import Console
+from rich.table import Table
 from rich.text import Text
 
 from wifimonitor.display.tables import (
@@ -141,6 +143,17 @@ class TestBuildTable:
         table = build_table(nets)
         col_names = [c.header for c in table.columns]
         assert "Key" not in col_names
+
+    def test_credentials_by_bssid_shows_key_for_hidden_network(self):
+        """Hidden network with BSSID in credentials_by_bssid shows Key indicator."""
+        nets = [Network(bssid="aa:bb:cc:dd:ee:ff", ssid="", channel=6, signal=-50)]
+        creds_by_bssid = {"aa:bb:cc:dd:ee:ff": ("MyHidden", "")}
+        table = build_table(nets, credentials_by_bssid=creds_by_bssid)
+        col_names = [c.header for c in table.columns]
+        assert "Key" in col_names
+        buf = io.StringIO()
+        Console(file=buf, no_color=True, highlight=False, width=120).print(table)
+        assert "*" in buf.getvalue()
 
     def test_connected_bssid_row_count(self):
         nets = [

@@ -24,53 +24,61 @@ from wifimonitor.credentials import (
 # ---------------------------------------------------------------------------
 
 class TestLoadCredentials:
-    """load_credentials reads SSID/passphrase pairs from CSV."""
+    """load_credentials reads SSID/passphrase and BSSID-keyed hidden credentials."""
 
     def test_loads_valid_csv(self, tmp_path):
         path = tmp_path / "creds.csv"
         path.write_text("HomeNet,mypassword\nOffice,officepass\n")
-        creds = load_credentials(str(path))
-        assert creds == {"HomeNet": "mypassword", "Office": "officepass"}
+        by_ssid, by_bssid = load_credentials(str(path))
+        assert by_ssid == {"HomeNet": "mypassword", "Office": "officepass"}
+        assert by_bssid == {}
 
     def test_skips_comment_lines(self, tmp_path):
         path = tmp_path / "creds.csv"
         path.write_text("# This is a comment\nHomeNet,password\n")
-        creds = load_credentials(str(path))
-        assert len(creds) == 1
-        assert "HomeNet" in creds
+        by_ssid, by_bssid = load_credentials(str(path))
+        assert len(by_ssid) == 1
+        assert "HomeNet" in by_ssid
+        assert by_bssid == {}
 
     def test_skips_blank_lines(self, tmp_path):
         path = tmp_path / "creds.csv"
         path.write_text("HomeNet,password\n\n\nOffice,pass2\n")
-        creds = load_credentials(str(path))
-        assert len(creds) == 2
+        by_ssid, by_bssid = load_credentials(str(path))
+        assert len(by_ssid) == 2
+        assert by_bssid == {}
 
     def test_skips_single_field_lines(self, tmp_path):
         path = tmp_path / "creds.csv"
         path.write_text("OnlySSID\nHomeNet,password\n")
-        creds = load_credentials(str(path))
-        assert len(creds) == 1
+        by_ssid, by_bssid = load_credentials(str(path))
+        assert len(by_ssid) == 1
+        assert by_bssid == {}
 
     def test_missing_file_returns_empty(self, tmp_path):
-        creds = load_credentials(str(tmp_path / "nonexistent.csv"))
-        assert creds == {}
+        by_ssid, by_bssid = load_credentials(str(tmp_path / "nonexistent.csv"))
+        assert by_ssid == {}
+        assert by_bssid == {}
 
     def test_quoted_fields(self, tmp_path):
         path = tmp_path / "creds.csv"
         path.write_text('"Net, with comma","pass, word"\n')
-        creds = load_credentials(str(path))
-        assert creds.get("Net, with comma") == "pass, word"
+        by_ssid, by_bssid = load_credentials(str(path))
+        assert by_ssid.get("Net, with comma") == "pass, word"
+        assert by_bssid == {}
 
     def test_strips_whitespace(self, tmp_path):
         path = tmp_path / "creds.csv"
         path.write_text("  HomeNet  ,  password  \n")
-        creds = load_credentials(str(path))
-        assert creds == {"HomeNet": "password"}
+        by_ssid, by_bssid = load_credentials(str(path))
+        assert by_ssid == {"HomeNet": "password"}
+        assert by_bssid == {}
 
     def test_directory_path_returns_empty(self, tmp_path):
-        """A directory is not a file — should return empty dict."""
-        creds = load_credentials(str(tmp_path))
-        assert creds == {}
+        """A directory is not a file — should return empty dicts."""
+        by_ssid, by_bssid = load_credentials(str(tmp_path))
+        assert by_ssid == {}
+        assert by_bssid == {}
 
     def test_warns_world_readable(self, tmp_path, capsys):
         path = tmp_path / "creds.csv"
@@ -79,6 +87,42 @@ class TestLoadCredentials:
         load_credentials(str(path))
         captured = capsys.readouterr()
         assert "WARNING" in captured.err or captured.err == ""  # May not warn depending on umask
+
+    def test_bssid_line_parsed_into_by_bssid(self, tmp_path):
+        """BSSID,SSID,passphrase lines populate by_bssid."""
+        path = tmp_path / "creds.csv"
+        path.write_text("aa:bb:cc:dd:ee:ff,MyHiddenNet,secret123\n")
+        by_ssid, by_bssid = load_credentials(str(path))
+        assert by_ssid == {}
+        assert by_bssid == {"aa:bb:cc:dd:ee:ff": ("MyHiddenNet", "secret123")}
+
+    def test_bssid_normalized_lowercase(self, tmp_path):
+        path = tmp_path / "creds.csv"
+        path.write_text("AA:BB:CC:DD:EE:FF,Hidden,pass\n")
+        by_ssid, by_bssid = load_credentials(str(path))
+        assert by_bssid == {"aa:bb:cc:dd:ee:ff": ("Hidden", "pass")}
+
+    def test_bssid_open_network_empty_passphrase(self, tmp_path):
+        path = tmp_path / "creds.csv"
+        path.write_text("aa:11:22:33:44:55,OpenHidden,\n")
+        by_ssid, by_bssid = load_credentials(str(path))
+        assert by_bssid == {"aa:11:22:33:44:55": ("OpenHidden", "")}
+
+    def test_mixed_ssid_and_bssid_lines(self, tmp_path):
+        path = tmp_path / "creds.csv"
+        path.write_text("HomeNet,pass1\naa:bb:cc:dd:ee:ff,HiddenNet,pass2\nOffice,pass3\n")
+        by_ssid, by_bssid = load_credentials(str(path))
+        assert by_ssid == {"HomeNet": "pass1", "Office": "pass3"}
+        assert by_bssid == {"aa:bb:cc:dd:ee:ff": ("HiddenNet", "pass2")}
+
+    def test_two_fields_with_mac_like_first_treated_as_ssid(self, tmp_path):
+        """Two-field line: aa:bb:cc:dd:ee:ff,pass — first is SSID if only 2 fields."""
+        path = tmp_path / "creds.csv"
+        path.write_text("aa:bb:cc:dd:ee:ff,mypassword\n")
+        by_ssid, by_bssid = load_credentials(str(path))
+        # BSSID lines require 3+ fields; 2-field lines are always SSID
+        assert by_ssid == {"aa:bb:cc:dd:ee:ff": "mypassword"}
+        assert by_bssid == {}
 
 
 # ---------------------------------------------------------------------------
@@ -159,6 +203,25 @@ class TestConnectWifiNmcli:
         cmd = mock_runner.run.call_args[0][0]
         assert "ifname" not in cmd
 
+    def test_hidden_included_when_true(self):
+        mock_runner = MagicMock()
+        result = MagicMock()
+        result.returncode = 0
+        mock_runner.run.return_value = result
+        connect_wifi_nmcli("HiddenNet", "", hidden=True, runner=mock_runner)
+        cmd = mock_runner.run.call_args[0][0]
+        assert "hidden" in cmd
+        assert "yes" in cmd
+
+    def test_hidden_not_included_when_false(self):
+        mock_runner = MagicMock()
+        result = MagicMock()
+        result.returncode = 0
+        mock_runner.run.return_value = result
+        connect_wifi_nmcli("Net", "pass", hidden=False, runner=mock_runner)
+        cmd = mock_runner.run.call_args[0][0]
+        assert "hidden" not in cmd
+
 
 # ---------------------------------------------------------------------------
 # Standalone CLI
@@ -196,6 +259,15 @@ class TestCredentialsCli:
         main(["-c", str(path)])
         captured = capsys.readouterr()
         assert "HomeNet" in captured.out
+        assert "1 credential" in captured.out
+
+    def test_main_lists_bssid_credentials(self, tmp_path, capsys):
+        path = tmp_path / "creds.csv"
+        path.write_text("aa:bb:cc:dd:ee:ff,MyHidden,pass\n")
+        main(["-c", str(path)])
+        captured = capsys.readouterr()
+        assert "aa:bb:cc:dd:ee:ff" in captured.out
+        assert "MyHidden" in captured.out
         assert "1 credential" in captured.out
 
     def test_main_connect_ssid_not_in_file(self, tmp_path):

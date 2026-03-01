@@ -79,6 +79,11 @@ class DnsTracker:
         with self._lock:
             return self._counts.most_common(n)
 
+    def reset(self) -> None:
+        """Clear all recorded DNS query counts (thread-safe)."""
+        with self._lock:
+            self._counts.clear()
+
     def start(self, interface: str | None = None) -> bool:
         """Start capturing DNS queries via tcpdump.
 

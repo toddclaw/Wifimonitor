@@ -59,6 +59,7 @@ def build_interface_header(interface_label: str) -> Text:
 def build_table(
     networks: list[Network],
     credentials: dict[str, str] | None = None,
+    credentials_by_bssid: dict[str, tuple[str, str]] | None = None,
     caption_override: str | None = None,
     connected_bssid: str | None = None,
 ) -> Table:
@@ -69,6 +70,9 @@ def build_table(
         credentials: Optional dict of SSID -> passphrase.  When provided,
             a "Key" column is added showing which networks have known
             passphrases.
+        credentials_by_bssid: Optional dict of BSSID -> (ssid, passphrase) for
+            hidden networks.  When provided, hidden networks with known
+            credentials show the Key indicator.
         caption_override: Optional caption to use instead of default.
         connected_bssid: Optional BSSID of the currently connected network.
             When provided, the matching row is highlighted bold and shows a
@@ -78,7 +82,7 @@ def build_table(
     # Normalize: empty string or None both mean "not connected"
     _connected = connected_bssid.lower() if connected_bssid else None
 
-    show_key = bool(credentials)
+    show_key = bool(credentials) or bool(credentials_by_bssid)
     caption = caption_override if caption_override is not None else f"{len(networks)} networks found"
     table = Table(
         title="WiFi Monitor — Acer Nitro 5",
@@ -115,7 +119,12 @@ def build_table(
             ssid,
         ]
         if show_key:
-            has_key = (net.ssid in credentials) if (net.ssid and credentials) else False
+            if net.ssid and credentials:
+                has_key = net.ssid in credentials
+            elif not net.ssid and credentials_by_bssid:
+                has_key = net.bssid in credentials_by_bssid
+            else:
+                has_key = False
             row.append("[green]*[/green]" if has_key else "")
         row.extend([
             escape(net.bssid.upper()),

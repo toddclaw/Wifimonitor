@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import csv
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -23,25 +24,40 @@ from wifimonitor.wifi_common import (
 
 _DEFAULT_RUNNER = SubprocessRunner()
 
+_BSSID_RE = re.compile(r"^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$")
+
+
+def _is_bssid(s: str) -> bool:
+    """Return True if s looks like a MAC address (BSSID)."""
+    return bool(_BSSID_RE.match(s.strip()))
+
 
 # ---------------------------------------------------------------------------
 # Credentials file I/O
 # ---------------------------------------------------------------------------
 
-def load_credentials(filepath: str) -> dict[str, str]:
-    """Load SSID/passphrase pairs from a CSV file.
+def load_credentials(
+    filepath: str,
+) -> tuple[dict[str, str], dict[str, tuple[str, str]]]:
+    """Load SSID/passphrase and BSSID-keyed hidden network credentials.
 
-    File format: one ``ssid,passphrase`` per line.  Lines starting with
-    ``#`` are comments.  Blank lines are ignored.  Fields may be quoted
-    to include commas.  Returns an empty dict if the file is missing or
-    unreadable.
+    File format:
+    - Standard: ``ssid,passphrase`` (2 fields per line)
+    - Hidden:   ``BSSID,SSID,passphrase`` (3 fields, first is MAC address)
 
-    Warns to stderr if the file is world-readable (permissions concern).
+    Lines starting with ``#`` are comments.  Blank lines are ignored.
+    Fields may be quoted to include commas.
+
+    Returns:
+        (by_ssid, by_bssid) where:
+        - by_ssid: SSID -> passphrase for normal networks
+        - by_bssid: BSSID (lowercase) -> (ssid, passphrase) for hidden networks
     """
-    creds: dict[str, str] = {}
+    by_ssid: dict[str, str] = {}
+    by_bssid: dict[str, tuple[str, str]] = {}
 
     if not os.path.isfile(filepath):
-        return creds
+        return (by_ssid, by_bssid)
 
     # Check file permissions — warn if world-readable
     try:
@@ -64,13 +80,20 @@ def load_credentials(filepath: str) -> dict[str, str]:
                     continue
                 if len(row) < 2:
                     continue
-                ssid = row[0].strip()
-                passphrase = row[1].strip()
-                creds[ssid] = passphrase
+                first = row[0].strip()
+                if len(row) >= 3 and _is_bssid(first):
+                    bssid = first.lower()
+                    ssid = row[1].strip()
+                    passphrase = row[2].strip()
+                    by_bssid[bssid] = (ssid, passphrase)
+                else:
+                    ssid = first
+                    passphrase = row[1].strip()
+                    by_ssid[ssid] = passphrase
     except OSError:
-        return creds
+        return (by_ssid, by_bssid)
 
-    return creds
+    return (by_ssid, by_bssid)
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +105,7 @@ def connect_wifi_nmcli(
     passphrase: str,
     interface: str | None = None,
     *,
+    hidden: bool = False,
     runner: CommandRunner | None = None,
 ) -> bool:
     """Connect to a WiFi network using nmcli.
@@ -90,6 +114,7 @@ def connect_wifi_nmcli(
         ssid: The network SSID to connect to.
         passphrase: The network passphrase (empty string for open networks).
         interface: Optional wireless interface name.
+        hidden: If True, append ``hidden yes`` for hidden networks.
         runner: Optional CommandRunner for subprocess calls (testing seam).
 
     Returns:
@@ -101,6 +126,9 @@ def connect_wifi_nmcli(
 
     if passphrase:
         cmd += ["password", passphrase]
+
+    if hidden:
+        cmd += ["hidden", "yes"]
 
     if interface:
         cmd += ["ifname", interface]
@@ -139,20 +167,24 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> None:
     """Load credentials and optionally connect to a network."""
     args = _parse_args(argv)
-    creds = load_credentials(args.credentials)
-    if not creds:
+    by_ssid, by_bssid = load_credentials(args.credentials)
+    total = len(by_ssid) + len(by_bssid)
+    if not total:
         print(f"ERROR: No credentials loaded from {args.credentials}", file=sys.stderr)
         sys.exit(1)
 
-    print(f"Loaded {len(creds)} credential(s) from {args.credentials}")
-    for ssid in creds:
+    print(f"Loaded {total} credential(s) from {args.credentials}")
+    for ssid in by_ssid:
         print(f"  {ssid}")
+    for bssid in by_bssid:
+        ssid, _ = by_bssid[bssid]
+        print(f"  {bssid} -> {ssid or '(hidden)'}")
 
     if args.ssid:
-        if args.ssid not in creds:
+        if args.ssid not in by_ssid:
             print(f"ERROR: SSID '{args.ssid}' not found in credentials file", file=sys.stderr)
             sys.exit(1)
-        ok = connect_wifi_nmcli(args.ssid, creds[args.ssid], interface=args.interface)
+        ok = connect_wifi_nmcli(args.ssid, by_ssid[args.ssid], interface=args.interface)
         if ok:
             print(f"Connected to {args.ssid}")
         else:

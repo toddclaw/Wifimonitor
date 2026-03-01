@@ -186,6 +186,45 @@ class TestDnsTracker:
         total = sum(count for _, count in tracker.top(400))
         assert total == 400
 
+    def test_reset_clears_counts(self):
+        tracker = DnsTracker()
+        tracker.record("google.com")
+        tracker.record("google.com")
+        tracker.record("example.org")
+        assert len(tracker.top(10)) > 0
+        tracker.reset()
+        assert tracker.top() == []
+
+    def test_reset_thread_safe(self):
+        """reset() while recording from another thread does not corrupt state."""
+        tracker = DnsTracker()
+        errors = []
+        reset_done = threading.Event()
+
+        def record_loop():
+            try:
+                for i in range(200):
+                    tracker.record(f"domain{i}.com")
+                    if i == 50:
+                        reset_done.set()
+            except Exception as exc:
+                errors.append(exc)
+
+        def reset_loop():
+            reset_done.wait()
+            for _ in range(5):
+                tracker.reset()
+
+        t1 = threading.Thread(target=record_loop)
+        t2 = threading.Thread(target=reset_loop)
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+        assert not errors
+        # After resets, counts may be empty or have some domains; no crash
+        tracker.top()
+
 
 # ---------------------------------------------------------------------------
 # Standalone CLI

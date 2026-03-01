@@ -79,7 +79,7 @@ python3 -m wifimonitor --help
 
 The `-c` / `--credentials` option loads a CSV file containing SSID and passphrase pairs. When loaded, a **Key** column appears in the display marking networks with known passphrases. Combined with `--connect`, the monitor will automatically join the strongest matching network on the first scan.
 
-**File format** -- one `ssid,passphrase` per line:
+**File format** -- one `ssid,passphrase` per line, or `BSSID,SSID,passphrase` for hidden networks:
 
 ```csv
 # Lines starting with # are comments
@@ -87,10 +87,14 @@ HomeNetwork,mysecretpassword
 Coffee Shop,cafe2024
 "Network, With Commas","pass,word"
 OpenCafe,
+# Hidden networks (BSSID, SSID, passphrase) — nmcli requires the SSID
+aa:bb:cc:dd:ee:ff,MyHiddenNet,
+aa:11:22:33:44:55,HiddenSecure,wpa2password
 ```
 
 - Fields may be quoted to include commas (standard CSV quoting).
 - Empty passphrase (e.g. `OpenCafe,`) connects to open networks.
+- Hidden networks: use `BSSID,SSID,passphrase` (3 fields); the first field must be a MAC address. Enables connecting to open or secured hidden networks via the `n` key or auto-connect.
 - Blank lines and comment lines are ignored.
 
 **Security note:** The credentials file contains plaintext passphrases. Restrict its permissions:
@@ -115,6 +119,7 @@ sudo wifimonitor --dns -c credentials.csv --connect
 
 - Requires root privileges (tcpdump needs raw socket access).
 - Uses a background thread to read tcpdump output without blocking the scan loop.
+- Query counts are reset automatically when the connected network changes.
 - Domain names are extracted from DNS query packets (A, AAAA, PTR, MX, CNAME, TXT, SRV, HTTPS, etc.).
 - The top 15 most-queried domains are displayed, updated every scan cycle.
 - If tcpdump is not installed or cannot start, the feature is silently disabled and the normal network table is shown.

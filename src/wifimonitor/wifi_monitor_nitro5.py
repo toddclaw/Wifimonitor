@@ -205,6 +205,7 @@ class RichNetworkRenderer:
         networks: list[Network],
         *,
         credentials: dict[str, str] | None = None,
+        credentials_by_bssid: dict[str, tuple[str, str]] | None = None,
         connected_bssid: str | None = None,
         caption_override: str | None = None,
     ) -> Table:
@@ -212,6 +213,7 @@ class RichNetworkRenderer:
         return build_table(
             networks,
             credentials=credentials,
+            credentials_by_bssid=credentials_by_bssid,
             caption_override=caption_override,
             connected_bssid=connected_bssid,
         )
@@ -301,18 +303,20 @@ def _get_display_interfaces(
 def _select_next_network(
     networks: list[Network],
     credentials: dict[str, str] | None,
+    credentials_by_bssid: dict[str, tuple[str, str]] | None,
     connected_bssid: str | None,
 ) -> Network | None:
     """Select the next available network to connect to.
 
     Order: (1) networks with credentials by signal descending, (2) open
-    networks by signal descending. Excludes the currently connected network.
-    "Next" = the network after current in this list, wrapping to first if
-    at end or not connected.
+    networks by signal descending (including open hidden with BSSID creds).
+    Excludes the currently connected network.  "Next" = the network after
+    current in this list, wrapping to first if at end or not connected.
 
     Args:
         networks: Scanned networks (any order).
         credentials: SSID -> passphrase dict, or None.
+        credentials_by_bssid: BSSID -> (ssid, passphrase) for hidden, or None.
         connected_bssid: BSSID of currently connected network, or None.
 
     Returns:
@@ -322,12 +326,15 @@ def _select_next_network(
     with_creds: list[Network] = []
     open_nets: list[Network] = []
     for net in networks:
-        if not net.ssid:
-            continue
-        if credentials and net.ssid in credentials:
-            with_creds.append(net)
-        elif net.security == "Open":
+        if net.ssid:
+            if credentials and net.ssid in credentials:
+                with_creds.append(net)
+            elif net.security == "Open":
+                open_nets.append(net)
+        elif net.security == "Open" and credentials_by_bssid and net.bssid in credentials_by_bssid:
             open_nets.append(net)
+        elif credentials_by_bssid and net.bssid in credentials_by_bssid:
+            with_creds.append(net)
     with_creds.sort(key=lambda n: n.signal, reverse=True)
     open_nets.sort(key=lambda n: n.signal, reverse=True)
     ordered = with_creds + open_nets
@@ -506,7 +513,6 @@ def main() -> None:
             args.interface = detected
             _LOGGER.debug("auto-detected interface: %s", detected)
 
-    credentials: dict[str, str] | None = None
     connected = False
     dns_tracker: DnsTracker | None = None
     deauth_tracker: DeauthTracker | None = None
@@ -516,6 +522,8 @@ def main() -> None:
     nmcli_scanner = NmcliScanner(interface=args.interface)
     renderer = RichNetworkRenderer()
     baseline: list[KnownNetwork] = []
+    credentials_by_ssid: dict[str, str] | None = None
+    credentials_by_bssid: dict[str, tuple[str, str]] | None = None
 
     if args.baseline:
         baseline = load_baseline(args.baseline)
@@ -578,13 +586,16 @@ def main() -> None:
             airodump_scanner = None
 
     if args.credentials:
-        credentials = load_credentials(args.credentials)
-        if credentials:
+        credentials_by_ssid, credentials_by_bssid = load_credentials(args.credentials)
+        creds_count = len(credentials_by_ssid) + len(credentials_by_bssid)
+        if creds_count:
             console.print(
                 f"[bold cyan]WiFi Monitor[/bold cyan] — "
-                f"loaded {len(credentials)} credential(s)"
+                f"loaded {creds_count} credential(s)"
             )
         else:
+            credentials_by_ssid = None
+            credentials_by_bssid = None
             console.print(
                 "[bold cyan]WiFi Monitor[/bold cyan] — "
                 "[yellow]no credentials loaded[/yellow]"
@@ -611,7 +622,7 @@ def main() -> None:
             airodump_ok=airodump_scanner is not None,
             airodump_failure=airodump_failure_reason,
             dns_ok=dns_tracker is not None if args.dns else None,
-            creds_count=len(credentials) if credentials else 0,
+            creds_count=len(credentials_by_ssid or {}) + len(credentials_by_bssid or {}),
         )
 
     console.print("[bold cyan]WiFi Monitor[/bold cyan] — Acer Nitro 5")
@@ -626,6 +637,7 @@ def main() -> None:
             f"Scanning {'all interfaces' if not args.interface else args.interface}…\n"
         )
 
+    prev_connected_bssid: str | None = None
     try:
         with Live(console=console, refresh_per_second=1, screen=True) as live:
             while True:
@@ -648,6 +660,10 @@ def main() -> None:
                 connected_bssid = _get_connected_bssid(
                     args.interface, runner=_DEFAULT_RUNNER
                 )
+                if connected_bssid != prev_connected_bssid:
+                    if dns_tracker is not None:
+                        dns_tracker.reset()
+                    prev_connected_bssid = connected_bssid
 
                 if arp_scanner is not None:
                     arp_count = arp_scanner.scan()
@@ -659,7 +675,8 @@ def main() -> None:
 
                 network_table = renderer.render(
                     networks,
-                    credentials=credentials,
+                    credentials=credentials_by_ssid,
+                    credentials_by_bssid=credentials_by_bssid,
                     caption_override=caption_override,
                     connected_bssid=connected_bssid,
                 )
@@ -704,13 +721,25 @@ def main() -> None:
                 # When monitor mode is active, the scan interface is in monitor mode
                 # and cannot connect; use interface=None so nmcli picks a managed one.
                 connect_iface = None if airodump_scanner else args.interface
-                if args.connect and credentials and not connected:
+                has_creds = bool(credentials_by_ssid or credentials_by_bssid)
+                if args.connect and has_creds and not connected:
                     for net in networks:
-                        if net.ssid and net.ssid in credentials:
+                        if net.ssid and credentials_by_ssid and net.ssid in credentials_by_ssid:
                             ok = connect_wifi_nmcli(
                                 net.ssid,
-                                credentials[net.ssid],
+                                credentials_by_ssid[net.ssid],
                                 interface=connect_iface,
+                            )
+                            if ok:
+                                connected = True
+                            break
+                        elif not net.ssid and credentials_by_bssid and net.bssid in credentials_by_bssid:
+                            ssid, passphrase = credentials_by_bssid[net.bssid]
+                            ok = connect_wifi_nmcli(
+                                ssid,
+                                passphrase,
+                                interface=connect_iface,
+                                hidden=True,
                             )
                             if ok:
                                 connected = True
@@ -727,18 +756,30 @@ def main() -> None:
                             if key and key.lower() == "n":
                                 next_net = _select_next_network(
                                     networks,
-                                    credentials,
+                                    credentials_by_ssid,
+                                    credentials_by_bssid,
                                     connected_bssid,
                                 )
                                 if next_net:
-                                    passphrase = (credentials or {}).get(
-                                        next_net.ssid, ""
-                                    )
-                                    connect_wifi_nmcli(
-                                        next_net.ssid,
-                                        passphrase,
-                                        interface=connect_iface,
-                                    )
+                                    if next_net.ssid and credentials_by_ssid:
+                                        passphrase = credentials_by_ssid.get(
+                                            next_net.ssid, ""
+                                        )
+                                        connect_wifi_nmcli(
+                                            next_net.ssid,
+                                            passphrase,
+                                            interface=connect_iface,
+                                        )
+                                    elif not next_net.ssid and credentials_by_bssid and next_net.bssid in credentials_by_bssid:
+                                        ssid, passphrase = credentials_by_bssid[
+                                            next_net.bssid
+                                        ]
+                                        connect_wifi_nmcli(
+                                            ssid,
+                                            passphrase,
+                                            interface=connect_iface,
+                                            hidden=True,
+                                        )
                         finally:
                             termios.tcsetattr(fd, termios.TCSADRAIN, old_attrs)
                     except (termios.error, OSError):
