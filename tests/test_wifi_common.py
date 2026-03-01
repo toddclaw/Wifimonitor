@@ -1,5 +1,7 @@
 """Tests for wifi_common shared functions."""
 
+from __future__ import annotations
+
 import logging
 
 import pytest

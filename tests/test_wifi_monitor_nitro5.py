@@ -8,6 +8,8 @@ Follows TDD agent standards:
 - Unhappy-path coverage (malformed input, edge cases)
 """
 
+from __future__ import annotations
+
 import argparse
 import io as _io
 import subprocess
