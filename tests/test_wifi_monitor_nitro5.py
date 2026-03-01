@@ -2463,6 +2463,17 @@ class TestRichNetworkRenderer:
         result = renderer.render(nets, caption_override="custom caption")
         assert result.caption == "custom caption"
 
+    def test_render_forwards_next_bssid(self):
+        """render() forwards next_bssid kwarg to build_table()."""
+        nets = [
+            Network(bssid="aa:bb:cc:dd:ee:01", ssid="Net1", signal=-55),
+            Network(bssid="aa:bb:cc:dd:ee:02", ssid="Net2", signal=-65),
+        ]
+        renderer = RichNetworkRenderer()
+        result = renderer.render(nets, next_bssid="aa:bb:cc:dd:ee:02")
+        col_names = [c.header for c in result.columns]
+        assert "Next" in col_names
+
     def test_render_empty_networks(self):
         """render() handles empty network list."""
         from rich.table import Table
@@ -2813,6 +2824,41 @@ class TestSelectNextNetwork:
         assert result is not None
         assert result.ssid == "Strong"
 
+    def test_exclude_bssids_skips_failed_networks(self):
+        """exclude_bssids causes failed networks to be skipped."""
+        creds = {"A": "a", "B": "b", "C": "c"}
+        nets = [
+            Network(bssid="aa:01", ssid="A", channel=6, signal=-45, security="WPA2"),
+            Network(bssid="aa:02", ssid="B", channel=11, signal=-65, security="WPA2"),
+            Network(bssid="aa:03", ssid="C", channel=36, signal=-75, security="WPA2"),
+        ]
+        # First would be A (strongest). Exclude it -> get B.
+        result = _select_next_network(
+            nets, creds, None, None, exclude_bssids=frozenset({"aa:01"})
+        )
+        assert result is not None
+        assert result.ssid == "B"
+        # Exclude A and B -> get C.
+        result = _select_next_network(
+            nets, creds, None, None, exclude_bssids=frozenset({"aa:01", "aa:02"})
+        )
+        assert result is not None
+        assert result.ssid == "C"
+
+    def test_exclude_bssids_empty_no_effect(self):
+        """Empty exclude_bssids does not change selection."""
+        creds = {"A": "a", "B": "b"}
+        nets = [
+            Network("aa:01", "A", 6, -45, "WPA2"),
+            Network("aa:02", "B", 11, -65, "WPA2"),
+        ]
+        r1 = _select_next_network(nets, creds, None, None)
+        r2 = _select_next_network(
+            nets, creds, None, None, exclude_bssids=frozenset()
+        )
+        assert r1 is not None and r2 is not None
+        assert r1.bssid == r2.bssid
+
 
 # ---------------------------------------------------------------------------
 # _setup_log_file
@@ -2927,6 +2973,42 @@ class TestMain:
             patch("wifimonitor.wifi_monitor_nitro5.time.sleep", side_effect=KeyboardInterrupt), \
             patch("wifimonitor.wifi_monitor_nitro5.sys.exit"):
             main()
+
+    def test_main_n_key_retries_next_network_on_connect_failure(self):
+        """Pressing 'n' retries next network when first connection fails."""
+        from wifimonitor.wifi_monitor_nitro5 import main
+        nets = [
+            Network(bssid="aa:bb:cc:dd:ee:01", ssid="Net1", channel=6, signal=-55, security="WPA2"),
+            Network(bssid="aa:bb:cc:dd:ee:02", ssid="Net2", channel=11, signal=-65, security="WPA2"),
+        ]
+        creds = {"Net1": "pass1", "Net2": "pass2"}
+        # Dummy termios attrs (termios expects list of 7 elements; cc has 36 items)
+        dummy_attrs = [0, 0, 0, 0, 0, 0, [0] * 36]
+        with patch("wifimonitor.wifi_monitor_nitro5._parse_args",
+                  return_value=self._args(credentials="creds.csv")), \
+            patch("wifimonitor.wifi_monitor_nitro5.list_wifi_interfaces", return_value=[]), \
+            patch("wifimonitor.wifi_monitor_nitro5.Console"), \
+            patch("wifimonitor.wifi_monitor_nitro5.Live"), \
+            patch("wifimonitor.wifi_monitor_nitro5.load_credentials", return_value=(creds, {})), \
+            patch("wifimonitor.wifi_monitor_nitro5.scan_wifi_nmcli", return_value=nets), \
+            patch("wifimonitor.wifi_monitor_nitro5._get_connected_bssid", return_value=None), \
+            patch("wifimonitor.wifi_monitor_nitro5.connect_wifi_nmcli",
+                  side_effect=[False, True]) as mock_connect, \
+            patch("wifimonitor.wifi_monitor_nitro5._wait_for_scan_interval_or_key",
+                  side_effect=["n", KeyboardInterrupt]), \
+            patch("wifimonitor.wifi_monitor_nitro5.sys.stdin.isatty", return_value=True), \
+            patch("wifimonitor.wifi_monitor_nitro5.sys.stdin.fileno", return_value=0), \
+            patch("wifimonitor.wifi_monitor_nitro5.termios.tcgetattr",
+                  return_value=dummy_attrs), \
+            patch("wifimonitor.wifi_monitor_nitro5.termios.tcsetattr"), \
+            patch("wifimonitor.wifi_monitor_nitro5.tty.setcbreak"), \
+            patch("wifimonitor.wifi_monitor_nitro5.sys.exit"):
+            main()
+        assert mock_connect.call_count == 2
+        first_call = mock_connect.call_args_list[0]
+        second_call = mock_connect.call_args_list[1]
+        assert first_call[0][0] == "Net1"
+        assert second_call[0][0] == "Net2"
 
     def test_main_credentials_empty_warns(self):
         """main() warns when credentials file loads no entries."""

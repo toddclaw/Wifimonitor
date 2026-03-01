@@ -62,6 +62,7 @@ def build_table(
     credentials_by_bssid: dict[str, tuple[str, str]] | None = None,
     caption_override: str | None = None,
     connected_bssid: str | None = None,
+    next_bssid: str | None = None,
 ) -> Table:
     """Build a Rich Table displaying the scanned networks.
 
@@ -78,11 +79,15 @@ def build_table(
             When provided, the matching row is highlighted bold and shows a
             filled-circle indicator in the "Con" column.  Empty string is
             treated as None (not connected).
+        next_bssid: Optional BSSID of the network that pressing 'n' will
+            connect to.  When provided, a "Next" column shows → on that row.
     """
     # Normalize: empty string or None both mean "not connected"
     _connected = connected_bssid.lower() if connected_bssid else None
+    _next = next_bssid.lower() if next_bssid else None
 
     show_key = bool(credentials) or bool(credentials_by_bssid)
+    show_next = _next is not None
     caption = caption_override if caption_override is not None else f"{len(networks)} networks found"
     table = Table(
         title="WiFi Monitor — Acer Nitro 5",
@@ -95,6 +100,8 @@ def build_table(
     )
     table.add_column("#", style="grey50", width=3, justify="right")
     table.add_column("Con", justify="center", width=3)
+    if show_next:
+        table.add_column("Next", justify="center", width=3)
     table.add_column("SSID", style="white", min_width=15, max_width=30)
     if show_key:
         table.add_column("Key", justify="center", width=3)
@@ -116,8 +123,11 @@ def build_table(
         row = [
             str(i),
             "[green]●[/green]" if is_connected else "",
-            ssid,
         ]
+        if show_next:
+            is_next = bool(_next) and net.bssid == _next
+            row.append("[cyan]→[/cyan]" if is_next else "")
+        row.append(ssid)
         if show_key:
             if net.ssid and credentials:
                 has_key = net.ssid in credentials

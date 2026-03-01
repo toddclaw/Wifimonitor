@@ -174,6 +174,34 @@ class TestBuildTable:
         table = build_table(nets, connected_bssid="")
         assert table.row_count == 1
 
+    def test_next_bssid_shows_indicator(self):
+        """next_bssid matching a network shows → in the Next column."""
+        nets = [
+            Network(bssid="aa:bb:cc:dd:ee:01", ssid="Net1", channel=6, signal=-55),
+            Network(bssid="aa:bb:cc:dd:ee:02", ssid="Net2", channel=11, signal=-65),
+        ]
+        table = build_table(nets, next_bssid="aa:bb:cc:dd:ee:02")
+        col_names = [c.header for c in table.columns]
+        assert "Next" in col_names
+        buf = io.StringIO()
+        Console(file=buf, no_color=True, highlight=False, width=120).print(table)
+        assert "→" in buf.getvalue()
+
+    def test_next_bssid_none_no_column(self):
+        """next_bssid=None → no Next column added."""
+        nets = [Network(bssid="aa:bb:cc:dd:ee:01", ssid="Test", channel=6, signal=-55)]
+        table = build_table(nets)
+        col_names = [c.header for c in table.columns]
+        assert "Next" not in col_names
+
+    def test_next_bssid_case_insensitive(self):
+        """Uppercase BSSID in next_bssid matches lowercase net.bssid."""
+        nets = [Network(bssid="aa:bb:cc:dd:ee:01", ssid="Test", channel=6, signal=-55)]
+        table = build_table(nets, next_bssid="AA:BB:CC:DD:EE:01")
+        buf = io.StringIO()
+        Console(file=buf, no_color=True, highlight=False, width=120).print(table)
+        assert "→" in buf.getvalue()
+
 
 # ---------------------------------------------------------------------------
 # build_dns_table

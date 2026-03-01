@@ -208,6 +208,7 @@ class RichNetworkRenderer:
         credentials_by_bssid: dict[str, tuple[str, str]] | None = None,
         connected_bssid: str | None = None,
         caption_override: str | None = None,
+        next_bssid: str | None = None,
     ) -> Table:
         """Render *networks* as a Rich Table."""
         return build_table(
@@ -216,6 +217,7 @@ class RichNetworkRenderer:
             credentials_by_bssid=credentials_by_bssid,
             caption_override=caption_override,
             connected_bssid=connected_bssid,
+            next_bssid=next_bssid,
         )
 
 
@@ -305,27 +307,34 @@ def _select_next_network(
     credentials: dict[str, str] | None,
     credentials_by_bssid: dict[str, tuple[str, str]] | None,
     connected_bssid: str | None,
+    *,
+    exclude_bssids: frozenset[str] | None = None,
 ) -> Network | None:
     """Select the next available network to connect to.
 
     Order: (1) networks with credentials by signal descending, (2) open
     networks by signal descending (including open hidden with BSSID creds).
-    Excludes the currently connected network.  "Next" = the network after
-    current in this list, wrapping to first if at end or not connected.
+    Excludes the currently connected network and any BSSIDs in exclude_bssids.
+    "Next" = the network after current in this list, wrapping to first if at
+    end or not connected.
 
     Args:
         networks: Scanned networks (any order).
         credentials: SSID -> passphrase dict, or None.
         credentials_by_bssid: BSSID -> (ssid, passphrase) for hidden, or None.
         connected_bssid: BSSID of currently connected network, or None.
+        exclude_bssids: BSSIDs to skip (e.g. failed connection attempts).
 
     Returns:
         The next network to connect to, or None if none available.
     """
     _connected = connected_bssid.lower() if connected_bssid else None
+    _exclude = exclude_bssids or frozenset()
     with_creds: list[Network] = []
     open_nets: list[Network] = []
     for net in networks:
+        if net.bssid.lower() in _exclude:
+            continue
         if net.ssid:
             if credentials and net.ssid in credentials:
                 with_creds.append(net)
@@ -673,12 +682,20 @@ def main() -> None:
                                 net.clients = arp_count
                                 break
 
+                next_network = _select_next_network(
+                    networks,
+                    credentials_by_ssid,
+                    credentials_by_bssid,
+                    connected_bssid,
+                )
+                next_bssid = next_network.bssid if next_network else None
                 network_table = renderer.render(
                     networks,
                     credentials=credentials_by_ssid,
                     credentials_by_bssid=credentials_by_bssid,
                     caption_override=caption_override,
                     connected_bssid=connected_bssid,
+                    next_bssid=next_bssid,
                 )
 
                 right_tables: list[Table] = []
@@ -754,18 +771,23 @@ def main() -> None:
                             tty.setcbreak(fd)
                             key = _wait_for_scan_interval_or_key(SCAN_INTERVAL, fd)
                             if key and key.lower() == "n":
-                                next_net = _select_next_network(
-                                    networks,
-                                    credentials_by_ssid,
-                                    credentials_by_bssid,
-                                    connected_bssid,
-                                )
-                                if next_net:
+                                exclude: set[str] = set()
+                                while True:
+                                    next_net = _select_next_network(
+                                        networks,
+                                        credentials_by_ssid,
+                                        credentials_by_bssid,
+                                        connected_bssid,
+                                        exclude_bssids=frozenset(exclude),
+                                    )
+                                    if not next_net:
+                                        break
+                                    ok = False
                                     if next_net.ssid and credentials_by_ssid:
                                         passphrase = credentials_by_ssid.get(
                                             next_net.ssid, ""
                                         )
-                                        connect_wifi_nmcli(
+                                        ok = connect_wifi_nmcli(
                                             next_net.ssid,
                                             passphrase,
                                             interface=connect_iface,
@@ -774,12 +796,15 @@ def main() -> None:
                                         ssid, passphrase = credentials_by_bssid[
                                             next_net.bssid
                                         ]
-                                        connect_wifi_nmcli(
+                                        ok = connect_wifi_nmcli(
                                             ssid,
                                             passphrase,
                                             interface=connect_iface,
                                             hidden=True,
                                         )
+                                    if ok:
+                                        break
+                                    exclude.add(next_net.bssid.lower())
                         finally:
                             termios.tcsetattr(fd, termios.TCSADRAIN, old_attrs)
                     except (termios.error, OSError):

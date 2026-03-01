@@ -174,6 +174,7 @@ sudo wifimonitor --monitor -i wlan1
 | #        | Row number                                                |
 | SSID     | Network name (or `<hidden>` for hidden networks)          |
 | Con      | `●` if this is the currently connected network            |
+| Next     | `→` if pressing `n` will connect to this network          |
 | Key      | `*` if credentials are known (only shown with `-c` flag)  |
 | BSSID    | Access point MAC address                                  |
 | Ch       | WiFi channel (2.4 GHz and 5 GHz)                         |
